@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated
+import asyncio
+from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
@@ -41,7 +43,7 @@ from app.services.files import FileService
 from app.services.pulls import PullRequestService
 from app.storage.audit import AuditStore
 
-DEBUG_ROUTE_VERSION = "2026-05-31-debug-v1"
+DEBUG_ROUTE_VERSION = "2026-05-31-debug-v3"
 
 debug_router = APIRouter(tags=["Debug"])
 router = APIRouter(
@@ -296,6 +298,30 @@ def _debug_error_response(
     return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
 
 
+def _summarize_workflow_runs_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    runs = payload.get("workflow_runs", [])
+    return {
+        "total_count": payload.get("total_count"),
+        "workflow_runs": [
+            {
+                "id": run.get("id"),
+                "name": run.get("name"),
+                "event": run.get("event"),
+                "head_branch": run.get("head_branch"),
+                "head_sha": run.get("head_sha"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "run_attempt": run.get("run_attempt"),
+                "created_at": run.get("created_at"),
+                "updated_at": run.get("updated_at"),
+                "html_url": run.get("html_url"),
+                "workflow_id": run.get("workflow_id"),
+            }
+            for run in runs[:5]
+        ],
+    }
+
+
 @router.get(
     "/debug/github-pull",
     operation_id="debugGitHubPullRequest",
@@ -337,13 +363,14 @@ async def debug_github_workflow_runs(
     owner: str,
     repo: str,
     github: Annotated[GitHubClient, Depends(github_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
     head_sha: str | None = Query(default=None),
     branch: str | None = Query(default=None),
     workflow_id: str | None = Query(default=None),
     event: str | None = Query(default=None),
 ) -> JSONResponse:
     params: dict[str, object] = {"head_sha": head_sha, "branch": branch, "workflow_id": workflow_id, "event": event}
-    github_params: dict[str, object] = {"per_page": 20}
+    github_params: dict[str, object] = {"per_page": 5}
     if head_sha:
         github_params["head_sha"] = head_sha
     if branch:
@@ -351,7 +378,43 @@ async def debug_github_workflow_runs(
     if event:
         github_params["event"] = event
     try:
-        payload = await github.list_workflow_runs(owner, repo, workflow_id=workflow_id, params=github_params)
+        async def _fetch_runs() -> dict[str, Any]:
+            async with httpx.AsyncClient(
+                base_url=settings.github_api_base_url.rstrip("/"),
+                timeout=httpx.Timeout(5.0),
+                trust_env=settings.github_use_env_proxy,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": settings.github_api_version,
+                    "User-Agent": "gpt-actions-gateway/debug-workflow-runs",
+                },
+                follow_redirects=False,
+            ) as client:
+                token = await github._auth.get_token(client)
+                if workflow_id:
+                    path = f"/repos/{owner}/{repo}/actions/workflows/{github._q(workflow_id)}/runs"
+                else:
+                    path = f"/repos/{owner}/{repo}/actions/runs"
+                raw_response = await client.get(path, params=github_params, headers={"Authorization": f"Bearer {token}"})
+                if raw_response.status_code >= 400:
+                    return {
+                        "github_status": raw_response.status_code,
+                        "body_excerpt": raw_response.text[:4000],
+                    }
+                return raw_response.json()
+
+        payload = await asyncio.wait_for(_fetch_runs(), timeout=6.0)
+        if "github_status" in payload:
+            response = GitHubDebugResponse(
+                ok=False,
+                route="debugGitHubWorkflowRuns",
+                version=DEBUG_ROUTE_VERSION,
+                owner=owner,
+                repo=repo,
+                params=params,
+                payload=payload,
+            )
+            return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
         response = GitHubDebugResponse(
             ok=True,
             route="debugGitHubWorkflowRuns",
@@ -359,9 +422,23 @@ async def debug_github_workflow_runs(
             owner=owner,
             repo=repo,
             params=params,
-            payload=payload,
+            payload=_summarize_workflow_runs_payload(payload),
         )
         return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    except TimeoutError as exc:
+        return _debug_error_response(
+            owner=owner,
+            repo=repo,
+            route="debugGitHubWorkflowRuns",
+            params={**params, "debug_timeout_seconds": 6},
+            exc=ApiError(
+                ErrorCode.GITHUB_ERROR,
+                "GitHub workflow runs 调试请求超时。",
+                status_code=502,
+                suggestion="这通常表示 runs 接口响应过慢或外部链路超时；请改用更小查询范围，或检查服务到 GitHub 的网络连通性。",
+                details={"head_sha": head_sha, "branch": branch, "workflow_id": workflow_id, "event": event},
+            ),
+        )
     except Exception as exc:
         return _debug_error_response(owner=owner, repo=repo, route="debugGitHubWorkflowRuns", params=params, exc=exc)
 
