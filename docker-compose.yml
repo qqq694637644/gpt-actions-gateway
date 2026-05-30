@@ -1,0 +1,14 @@
+services:
+  gateway:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - gateway-data:/app/data
+    environment:
+      AUDIT_DB_URL: sqlite:////app/data/audit.db
+    restart: unless-stopped
+
+volumes:
+  gateway-data:

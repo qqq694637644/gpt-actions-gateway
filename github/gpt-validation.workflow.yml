@@ -1,0 +1,23 @@
+name: GPT Validation
+
+on:
+  push:
+    branches:
+      - "gpt/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        shell: bash
+        run: |
+          echo "Replace this with low-privilege build/test commands only."
+          echo "Do not deploy, publish, or expose production secrets on gpt/* branches."
