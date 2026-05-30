@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import Field
 
 from app.models.common import GatewayBaseModel
@@ -45,6 +47,49 @@ class CIStatusResponse(GatewayBaseModel):
     conclusion: str | None = None
     workflow_runs: list[CIRun]
     warning: str | None = None
+
+
+class CIDebugError(GatewayBaseModel):
+    status_code: int
+    error_code: str
+    message: str
+    suggestion: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    exception_type: str | None = None
+
+
+class CIDebugStatusResponse(GatewayBaseModel):
+    ok: bool
+    owner: str
+    repo: str
+    commit_sha: str | None = None
+    branch: str | None = None
+    pr_number: int | None = None
+    workflow_id: str | None = None
+    event: str | None = None
+    created_after: str | None = None
+    result: CIStatusResponse | None = None
+    error: CIDebugError | None = None
+
+
+class GatewayDebugPingResponse(GatewayBaseModel):
+    ok: bool
+    route: str
+    version: str
+    app_env: str
+    public_base_url: str
+
+
+class RepoDebugPingResponse(GatewayBaseModel):
+    ok: bool
+    route: str
+    version: str
+    owner: str
+    repo: str
+    app_env: str
+    allow_all_repos: bool
+    allow_workflow_edit: bool
+    allow_rerun_ci: bool
 
 
 class Annotation(GatewayBaseModel):

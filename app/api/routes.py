@@ -3,14 +3,24 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
 
 from app.api.deps import audit_store, github_client, policy
 from app.auth.dependencies import require_auth
 from app.config.settings import Settings, get_settings
-from app.errors import ErrorResponse
+from app.errors import ApiError, ErrorCode, ErrorResponse
 from app.github.client import GitHubClient
 from app.models.branches import CreateWorkBranchRequest, CreateWorkBranchResponse
-from app.models.ci import CIStatusResponse, FailedCILogResponse, RerunCIRequest, RerunCIResponse
+from app.models.ci import (
+    CIDebugError,
+    CIDebugStatusResponse,
+    CIStatusResponse,
+    FailedCILogResponse,
+    GatewayDebugPingResponse,
+    RepoDebugPingResponse,
+    RerunCIRequest,
+    RerunCIResponse,
+)
 from app.models.commits import CommitFilesRequest, CommitFilesResponse
 from app.models.files import (
     FileContentResponse,
@@ -30,12 +40,34 @@ from app.services.files import FileService
 from app.services.pulls import PullRequestService
 from app.storage.audit import AuditStore
 
+DEBUG_ROUTE_VERSION = "2026-05-31-debug-v1"
+
+debug_router = APIRouter(tags=["Debug"])
 router = APIRouter(
     prefix="/repos/{owner}/{repo}",
     tags=["GPT Actions Gateway"],
     dependencies=[Depends(require_auth)],
     responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 413: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
 )
+
+
+@debug_router.get(
+    "/debug/ping",
+    operation_id="debugPing",
+    summary="调试网关基础连通性",
+    description="不需要鉴权。始终返回 200，用于确认当前对外暴露的网关实例是否已经加载了最新代码。",
+    response_model=GatewayDebugPingResponse,
+)
+async def debug_ping(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> GatewayDebugPingResponse:
+    return GatewayDebugPingResponse(
+        ok=True,
+        route="debugPing",
+        version=DEBUG_ROUTE_VERSION,
+        app_env=settings.app_env,
+        public_base_url=settings.public_base_url,
+    )
 
 
 @router.get(
@@ -198,6 +230,99 @@ async def get_ci_status(
         event=event,
         created_after=created_after,
     )
+
+
+@router.get(
+    "/debug/ping",
+    operation_id="debugRepoPing",
+    summary="调试仓库路由与鉴权链路",
+    description="需要鉴权，但不会访问 GitHub。始终返回 200，用于确认 repos 路由、Bearer 鉴权与最新配置是否已生效。",
+    response_model=RepoDebugPingResponse,
+)
+async def debug_repo_ping(
+    owner: str,
+    repo: str,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RepoDebugPingResponse:
+    return RepoDebugPingResponse(
+        ok=True,
+        route="debugRepoPing",
+        version=DEBUG_ROUTE_VERSION,
+        owner=owner,
+        repo=repo,
+        app_env=settings.app_env,
+        allow_all_repos=settings.allow_all_repos,
+        allow_workflow_edit=settings.allow_workflow_edit,
+        allow_rerun_ci=settings.allow_rerun_ci,
+    )
+
+
+@router.get(
+    "/ci/status-debug",
+    operation_id="debugGetCiStatus",
+    summary="调试 GitHub Actions 状态查询",
+    description="始终返回 200。成功时返回标准 CI 状态；失败时把内部错误码、HTTP 状态、建议和详细信息放进 error 字段，便于 GPT Actions 排查查询异常。",
+    response_model=CIDebugStatusResponse,
+)
+async def debug_get_ci_status(
+    owner: str,
+    repo: str,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    commit_sha: str | None = Query(default=None),
+    branch: str | None = Query(default=None),
+    pr_number: int | None = Query(default=None, ge=1),
+    workflow_id: str | None = Query(default=None, description="Workflow 文件名或 ID，可选。"),
+    event: str | None = Query(default=None, description="push 或 pull_request，可选。"),
+    created_after: str | None = Query(default=None, description="GitHub created >= 过滤条件，ISO 日期或时间。"),
+) -> JSONResponse:
+    service = CIService(github, pol, settings)
+    response = CIDebugStatusResponse(
+        ok=False,
+        owner=owner,
+        repo=repo,
+        commit_sha=commit_sha,
+        branch=branch,
+        pr_number=pr_number,
+        workflow_id=workflow_id,
+        event=event,
+        created_after=created_after,
+        )
+    try:
+        result = await service.get_ci_status(
+            owner,
+            repo,
+            commit_sha=commit_sha,
+            branch=branch,
+            pr_number=pr_number,
+            workflow_id=workflow_id,
+            event=event,
+            created_after=created_after,
+        )
+        response.ok = True
+        response.result = result
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    except ApiError as exc:
+        response.error = CIDebugError(
+            status_code=exc.status_code,
+            error_code=str(exc.error_code),
+            message=exc.message,
+            suggestion=exc.suggestion,
+            details=exc.details,
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    except Exception as exc:
+        response.error = CIDebugError(
+            status_code=502,
+            error_code=str(ErrorCode.GITHUB_ERROR),
+            message="CI 状态查询发生未处理异常。",
+            suggestion="检查服务日志和外部网络连通性，然后重试同一请求。",
+            details={"error": str(exc), "exception_repr": repr(exc)},
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
 
 
 @router.get(

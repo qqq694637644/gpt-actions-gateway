@@ -6,7 +6,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.api.routes import router as gateway_router
+from app.api.routes import debug_router, router as gateway_router
 from app.config.settings import get_settings
 from app.errors import register_exception_handlers
 from app.github.client import GitHubClient
@@ -32,6 +32,7 @@ def create_app() -> FastAPI:
     app.state.audit = AuditStore(settings.audit_db_url)
 
     register_exception_handlers(app)
+    app.include_router(debug_router)
     app.include_router(gateway_router)
 
     @app.middleware("http")

@@ -83,3 +83,13 @@ def register_exception_handlers(app: FastAPI) -> None:
             details={"errors": exc.errors()},
         )
         return JSONResponse(status_code=422, content=response.model_dump())
+
+    @app.exception_handler(Exception)
+    async def unexpected_error_handler(_: Request, exc: Exception) -> JSONResponse:
+        response = ErrorResponse(
+            error_code=ErrorCode.GITHUB_ERROR,
+            message="Unhandled server exception.",
+            suggestion="Check server logs and retry the request.",
+            details={"exception_type": type(exc).__name__, "error": str(exc)},
+        )
+        return JSONResponse(status_code=500, content=response.model_dump())
