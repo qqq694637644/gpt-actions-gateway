@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     allow_delete_files: bool = False
     allow_rerun_ci: bool = False
     allow_auto_merge: bool = False
+    enable_debug_routes: bool = False
 
     rate_limit_per_minute: int = 60
     audit_db_url: str = "sqlite:///./audit.db"

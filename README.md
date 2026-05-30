@@ -21,7 +21,6 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 | POST | `/repos/{owner}/{repo}/pulls/create` | `createPullRequest` | 创建 PR；若同 head/base 已有 open PR，则返回已有 PR |
 | POST | `/repos/{owner}/{repo}/pulls/merge` | `mergePullRequest` | 默认关闭；开启后仅允许 merge `gpt/*` 头分支且目标分支在白名单中的 PR |
 | POST | `/repos/{owner}/{repo}/ci/status/query` | `queryCiStatus` | 通过 JSON body 按 commit / PR / branch 查询并整理 GitHub Actions 状态 |
-| POST | `/repos/{owner}/{repo}/ci/status-debug/query` | `debugQueryCiStatus` | 通过 JSON body 调试 CI 状态查询，始终返回 200 JSON |
 | POST | `/repos/{owner}/{repo}/ci/failed-log/query` | `queryFailedCiLog` | 通过 JSON body 下载失败 job 日志并提取关键片段 |
 | POST | `/repos/{owner}/{repo}/ci/rerun-failed` | `rerunFailedCi` | 默认关闭；开启后仅允许 rerun `gpt/*` 分支的 failed jobs |
 
@@ -112,6 +111,8 @@ Workflows: Write
 
 默认不建议开启 workflow 编辑和 CI rerun。
 
+调试接口默认不会挂载到应用中，也不会出现在 OpenAPI。只有在临时排障时，才设置 `ENABLE_DEBUG_ROUTES=true` 并重启服务。
+
 如果部署机器设置了 `HTTP_PROXY` / `HTTPS_PROXY`，网关默认不会继承这些环境代理。只有在确认代理链路可以稳定访问 GitHub API 时，才设置 `GITHUB_USE_ENV_PROXY=true`。
 
 ## 推荐目标仓库 CI
@@ -137,6 +138,60 @@ Workflows: Write
 9. 如需自动 merge，先设置 `ALLOW_AUTO_MERGE=true`，再调用 `mergePullRequest`。
 
 ## 示例请求
+
+### 列出目录树
+
+```bash
+curl "$PUBLIC_BASE_URL/repos/acme/demo/tree?ref=main&path=src&extensions=.py&max_results=50" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET"
+```
+
+适用场景：
+
+- 先定位候选文件，再决定后续读取哪些文件。
+- 可通过 `path` 限定目录，通过 `extensions` 限定扩展名。
+
+### 读取单个文件
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/files/read" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ref": "main",
+    "path": "src/main.py"
+  }'
+```
+
+### 读取文件指定行范围
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/files/read-range" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ref": "main",
+    "path": "src/main.py",
+    "start_line": 1,
+    "end_line": 80
+  }'
+```
+
+### 批量读取多个文件
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/files/read-many" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ref": "main",
+    "paths": [
+      "README.md",
+      "src/main.py",
+      "pyproject.toml"
+    ]
+  }'
+```
 
 ### 创建工作分支
 
@@ -178,6 +233,20 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/commits/commit-files" \
   }'
 ```
 
+### 创建 PR
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/create" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "head_branch": "gpt/fix-windows-ci-20260530-ab12cd",
+    "base_branch": "main",
+    "title": "Fix Windows CI path handling",
+    "body": "Created by GPT Actions Gateway. CI status should be checked before merge."
+  }'
+```
+
 ### 合并 PR
 
 ```bash
@@ -193,6 +262,60 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/merge" \
 ```
 
 这个接口默认会被拦截。只有在 `.env` 中设置 `ALLOW_AUTO_MERGE=true` 并重启服务后，网关才会放行 merge。
+
+### 查询 CI 状态
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/status/query" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pr_number": 4
+  }'
+```
+
+可选查询方式：
+
+- 传 `commit_sha`
+- 传 `pr_number`
+- 传 `branch`
+- 可选再加 `workflow_id`、`event`、`created_after`
+
+建议优先级：
+
+1. `commit_sha`
+2. `pr_number`
+3. `branch`
+
+### 查询失败 CI 日志摘要
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/failed-log/query" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "run_id": 26688766120
+  }'
+```
+
+常用可选字段：
+
+- `run_attempt`
+- `job_id`
+- `max_lines`
+
+### 重试失败的 CI job
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/rerun-failed" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "run_id": 26688766120
+  }'
+```
+
+这个接口默认会被拦截。只有在 `.env` 中设置 `ALLOW_RERUN_CI=true` 并重启服务后，网关才会放行 rerun。
 
 ## 结构化错误响应
 

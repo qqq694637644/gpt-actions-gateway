@@ -54,11 +54,26 @@ from app.storage.audit import AuditStore
 DEBUG_ROUTE_VERSION = "2026-05-31-debug-v8"
 
 debug_router = APIRouter(tags=["Debug"])
+_error_responses = {
+    400: {"model": ErrorResponse},
+    401: {"model": ErrorResponse},
+    403: {"model": ErrorResponse},
+    409: {"model": ErrorResponse},
+    413: {"model": ErrorResponse},
+    422: {"model": ErrorResponse},
+    502: {"model": ErrorResponse},
+}
 router = APIRouter(
     prefix="/repos/{owner}/{repo}",
     tags=["GPT Actions Gateway"],
     dependencies=[Depends(require_auth)],
-    responses={400: {"model": ErrorResponse}, 401: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 413: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+    responses=_error_responses,
+)
+repo_debug_router = APIRouter(
+    prefix="/repos/{owner}/{repo}",
+    tags=["Debug"],
+    dependencies=[Depends(require_auth)],
+    responses=_error_responses,
 )
 
 
@@ -255,7 +270,7 @@ async def query_ci_status(
     )
 
 
-@router.get(
+@repo_debug_router.get(
     "/debug/ping",
     operation_id="debugRepoPing",
     summary="调试仓库路由与鉴权链路",
@@ -342,7 +357,7 @@ def _summarize_workflow_runs_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@router.post(
+@repo_debug_router.post(
     "/debug/github-workflow-runs-ping-post",
     operation_id="debugGitHubWorkflowRunsPingPost",
     summary="调试 workflow runs 路由外层链路（POST）",
@@ -367,7 +382,7 @@ async def debug_github_workflow_runs_ping_post(
     return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
 
 
-@router.post(
+@repo_debug_router.post(
     "/debug/github-workflow-runs-fail-post",
     operation_id="debugGitHubWorkflowRunsFailPost",
     summary="调试 workflow runs 错误包装链路（POST）",
@@ -395,7 +410,7 @@ async def debug_github_workflow_runs_fail_post(
     )
 
 
-@router.post(
+@repo_debug_router.post(
     "/debug/github-workflow-runs-post",
     operation_id="debugGitHubWorkflowRunsPost",
     summary="调试 GitHub workflow runs 查询（POST）",
@@ -483,7 +498,7 @@ async def debug_github_workflow_runs_post(
         return _debug_error_response(owner=owner, repo=repo, route="debugGitHubWorkflowRunsPost", params=params, exc=exc)
 
 
-@router.post(
+@repo_debug_router.post(
     "/ci/status-debug/query",
     operation_id="debugQueryCiStatus",
     summary="通过 POST 调试 GitHub Actions 状态查询",
