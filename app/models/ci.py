@@ -103,6 +103,29 @@ class GitHubDebugResponse(GatewayBaseModel):
     error: CIDebugError | None = None
 
 
+class WorkflowRunsDebugRequest(GatewayBaseModel):
+    head_sha: str | None = None
+    branch: str | None = None
+    workflow_id: str | None = None
+    event: str | None = None
+
+
+class CIStatusQueryRequest(GatewayBaseModel):
+    commit_sha: str | None = None
+    branch: str | None = None
+    pr_number: int | None = Field(default=None, ge=1)
+    workflow_id: str | None = None
+    event: str | None = None
+    created_after: str | None = None
+
+
+class FailedLogQueryRequest(GatewayBaseModel):
+    run_id: int = Field(ge=1)
+    run_attempt: int | None = Field(default=None, ge=1)
+    job_id: int | None = Field(default=None, ge=1)
+    max_lines: int | None = Field(default=None, ge=1)
+
+
 class Annotation(GatewayBaseModel):
     line: int | None = None
     message: str

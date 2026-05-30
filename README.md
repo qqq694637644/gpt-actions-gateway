@@ -6,7 +6,7 @@
 Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 ```
 
-它不会把 GitHub REST API 原样暴露给 GPT，而是只开放少量安全动作：读文件、列目录、创建 `gpt/*` 工作分支、并发安全提交、创建 PR、查询 CI、提取失败日志。默认不允许自动 merge、删除文件、修改 workflow 或重新触发 CI。
+它不会把 GitHub REST API 原样暴露给 GPT，而是只开放少量安全动作：读文件、列目录、创建 `gpt/*` 工作分支、并发安全提交、创建 PR、按需 merge PR、查询 CI、提取失败日志。默认不允许自动 merge、删除文件、修改 workflow 或重新触发 CI。
 
 ## 已实现接口
 
@@ -19,8 +19,10 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 | POST | `/repos/{owner}/{repo}/branches/create-work-branch` | `createWorkBranch` | 从白名单 base 创建 `gpt/*` 工作分支，支持幂等 |
 | POST | `/repos/{owner}/{repo}/commits/commit-files` | `commitFiles` | Git Database API 多文件提交，要求 `expected_head_sha`，`force=false` |
 | POST | `/repos/{owner}/{repo}/pulls/create` | `createPullRequest` | 创建 PR；若同 head/base 已有 open PR，则返回已有 PR |
-| GET | `/repos/{owner}/{repo}/ci/status` | `getCiStatus` | 按 commit / PR / branch 查询并整理 GitHub Actions 状态 |
-| GET | `/repos/{owner}/{repo}/ci/failed-log` | `getFailedCiLog` | 下载失败 job 日志并提取关键片段 |
+| POST | `/repos/{owner}/{repo}/pulls/merge` | `mergePullRequest` | 默认关闭；开启后仅允许 merge `gpt/*` 头分支且目标分支在白名单中的 PR |
+| POST | `/repos/{owner}/{repo}/ci/status/query` | `queryCiStatus` | 通过 JSON body 按 commit / PR / branch 查询并整理 GitHub Actions 状态 |
+| POST | `/repos/{owner}/{repo}/ci/status-debug/query` | `debugQueryCiStatus` | 通过 JSON body 调试 CI 状态查询，始终返回 200 JSON |
+| POST | `/repos/{owner}/{repo}/ci/failed-log/query` | `queryFailedCiLog` | 通过 JSON body 下载失败 job 日志并提取关键片段 |
 | POST | `/repos/{owner}/{repo}/ci/rerun-failed` | `rerunFailedCi` | 默认关闭；开启后仅允许 rerun `gpt/*` 分支的 failed jobs |
 
 ## 主要安全设计
@@ -33,6 +35,7 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 - 默认禁止删除文件、修改 `.github/workflows/*`、写入密钥类文件、写入二进制/压缩/构建产物。
 - CI 查询优先按 `commit_sha`/PR head SHA 精确匹配；branch 查询会先解析当前 head SHA，避免拿到旧 run。
 - CI rerun 默认关闭；开启后还要求 GitHub token 有 Actions: Write。
+- 自动 merge 默认关闭；开启后仅允许 merge `gpt/*` 分支发起的 PR。
 - SQLite 记录审计事件和幂等响应，避免 GPT Action 重试造成重复分支/提交。
 
 ## 快速启动
@@ -94,6 +97,13 @@ Metadata: Read
 Actions: Write
 ```
 
+开启 `ALLOW_AUTO_MERGE=true` 时额外需要：
+
+```text
+Contents: Write
+Pull requests: Write
+```
+
 允许修改 `.github/workflows/*` 时额外需要：
 
 ```text
@@ -121,10 +131,10 @@ Workflows: Write
 3. `createWorkBranch` 创建 `gpt/*` 分支。
 4. `commitFiles` 提交修改，传入 `expected_head_sha` 和可选 `previous_sha`。
 5. `createPullRequest` 创建 PR。
-6. `getCiStatus` 用 commit SHA 查询 CI。
-7. 失败时调用 `getFailedCiLog`。
+6. `queryCiStatus` 用 commit SHA / PR 查询 CI。
+7. 失败时调用 `queryFailedCiLog`。
 8. 根据日志再次读取文件并 `commitFiles`。
-9. CI 通过后由人类 review + merge。
+9. 如需自动 merge，先设置 `ALLOW_AUTO_MERGE=true`，再调用 `mergePullRequest`。
 
 ## 示例请求
 
@@ -167,6 +177,22 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/commits/commit-files" \
     ]
   }'
 ```
+
+### 合并 PR
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/merge" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pr_number": 4,
+    "merge_method": "squash",
+    "commit_title": "Merge GPT PR #4",
+    "commit_message": "Auto-merged by GPT Actions Gateway after CI passed."
+  }'
+```
+
+这个接口默认会被拦截。只有在 `.env` 中设置 `ALLOW_AUTO_MERGE=true` 并重启服务后，网关才会放行 merge。
 
 ## 结构化错误响应
 

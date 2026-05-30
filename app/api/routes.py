@@ -16,13 +16,16 @@ from app.models.branches import CreateWorkBranchRequest, CreateWorkBranchRespons
 from app.models.ci import (
     CIDebugError,
     CIDebugStatusResponse,
+    CIStatusQueryRequest,
     CIStatusResponse,
+    FailedLogQueryRequest,
     FailedCILogResponse,
     GatewayDebugPingResponse,
     GitHubDebugResponse,
     RepoDebugPingResponse,
     RerunCIRequest,
     RerunCIResponse,
+    WorkflowRunsDebugRequest,
 )
 from app.models.commits import CommitFilesRequest, CommitFilesResponse
 from app.models.files import (
@@ -34,7 +37,12 @@ from app.models.files import (
     ReadFilesRequest,
     ReadFilesResponse,
 )
-from app.models.pulls import CreatePullRequestRequest, CreatePullRequestResponse
+from app.models.pulls import (
+    CreatePullRequestRequest,
+    CreatePullRequestResponse,
+    MergePullRequestRequest,
+    MergePullRequestResponse,
+)
 from app.policy.rules import Policy
 from app.services.branches import BranchService
 from app.services.ci import CIService
@@ -43,7 +51,7 @@ from app.services.files import FileService
 from app.services.pulls import PullRequestService
 from app.storage.audit import AuditStore
 
-DEBUG_ROUTE_VERSION = "2026-05-31-debug-v3"
+DEBUG_ROUTE_VERSION = "2026-05-31-debug-v8"
 
 debug_router = APIRouter(tags=["Debug"])
 router = APIRouter(
@@ -203,35 +211,47 @@ async def create_pull_request(
     return await PullRequestService(github, pol).create_pull_request(owner, repo, request)
 
 
-@router.get(
-    "/ci/status",
-    operation_id="getCiStatus",
-    summary="Get normalized GitHub Actions status",
-    description="Queries CI by commit_sha, PR number, or branch. commit_sha is preferred; branch queries are resolved to the current head SHA to avoid stale runs.",
-    response_model=CIStatusResponse,
+@router.post(
+    "/pulls/merge",
+    operation_id="mergePullRequest",
+    summary="合并 GPT 创建的拉取请求",
+    description="默认关闭。需要设置 ALLOW_AUTO_MERGE=true，并且只允许合并头分支为 gpt/*、目标分支位于 BASE_BRANCH_ALLOWLIST 中的 PR。",
+    response_model=MergePullRequestResponse,
 )
-async def get_ci_status(
+async def merge_pull_request(
     owner: str,
     repo: str,
+    request: MergePullRequestRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+) -> MergePullRequestResponse:
+    return await PullRequestService(github, pol).merge_pull_request(owner, repo, request)
+
+
+@router.post(
+    "/ci/status/query",
+    operation_id="queryCiStatus",
+    summary="通过 POST 查询 GitHub Actions 状态",
+    description="与 getCiStatus 逻辑相同，但参数通过 JSON body 传递，用于绕过某些动作网关对 GET query string 的处理问题。",
+    response_model=CIStatusResponse,
+)
+async def query_ci_status(
+    owner: str,
+    repo: str,
+    request: CIStatusQueryRequest,
     github: Annotated[GitHubClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
-    commit_sha: str | None = Query(default=None),
-    branch: str | None = Query(default=None),
-    pr_number: int | None = Query(default=None, ge=1),
-    workflow_id: str | None = Query(default=None, description="Workflow file name or ID, optional."),
-    event: str | None = Query(default=None, description="push or pull_request, optional."),
-    created_after: str | None = Query(default=None, description="ISO date or datetime used as GitHub created >= filter."),
 ) -> CIStatusResponse:
     return await CIService(github, pol, settings).get_ci_status(
         owner,
         repo,
-        commit_sha=commit_sha,
-        branch=branch,
-        pr_number=pr_number,
-        workflow_id=workflow_id,
-        event=event,
-        created_after=created_after,
+        commit_sha=request.commit_sha,
+        branch=request.branch,
+        pr_number=request.pr_number,
+        workflow_id=request.workflow_id,
+        event=request.event,
+        created_after=request.created_after,
     )
 
 
@@ -322,61 +342,81 @@ def _summarize_workflow_runs_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@router.get(
-    "/debug/github-pull",
-    operation_id="debugGitHubPullRequest",
-    summary="调试 GitHub PR 查询",
-    description="只调用 GitHub pull request 查询，并始终返回 200 JSON，用于隔离 PR 查询阶段的问题。",
+@router.post(
+    "/debug/github-workflow-runs-ping-post",
+    operation_id="debugGitHubWorkflowRunsPingPost",
+    summary="调试 workflow runs 路由外层链路（POST）",
+    description="不访问 GitHub。通过 JSON body 回显参数并始终返回 200 JSON，用于确认是否是 query string 链路有问题。",
     response_model=GitHubDebugResponse,
 )
-async def debug_github_pull_request(
+async def debug_github_workflow_runs_ping_post(
     owner: str,
     repo: str,
-    github: Annotated[GitHubClient, Depends(github_client)],
-    pr_number: int = Query(..., ge=1),
+    request: WorkflowRunsDebugRequest,
 ) -> JSONResponse:
-    params = {"pr_number": pr_number}
-    try:
-        payload = await github.get_pull_request(owner, repo, pr_number)
-        response = GitHubDebugResponse(
-            ok=True,
-            route="debugGitHubPullRequest",
-            version=DEBUG_ROUTE_VERSION,
-            owner=owner,
-            repo=repo,
-            params=params,
-            payload=payload,
-        )
-        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
-    except Exception as exc:
-        return _debug_error_response(owner=owner, repo=repo, route="debugGitHubPullRequest", params=params, exc=exc)
+    params = request.model_dump()
+    response = GitHubDebugResponse(
+        ok=True,
+        route="debugGitHubWorkflowRunsPingPost",
+        version=DEBUG_ROUTE_VERSION,
+        owner=owner,
+        repo=repo,
+        params=params,
+        payload={"probe": "workflow-runs-ping-post", "params_echo": params},
+    )
+    return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
 
 
-@router.get(
-    "/debug/github-workflow-runs",
-    operation_id="debugGitHubWorkflowRuns",
-    summary="调试 GitHub workflow runs 查询",
-    description="只调用 GitHub workflow runs 查询，并始终返回 200 JSON，用于隔离 runs 查询阶段的问题。",
+@router.post(
+    "/debug/github-workflow-runs-fail-post",
+    operation_id="debugGitHubWorkflowRunsFailPost",
+    summary="调试 workflow runs 错误包装链路（POST）",
+    description="不访问 GitHub。通过 JSON body 构造一个调试错误并以 200 JSON 返回，用于确认是否是 query string 链路有问题。",
     response_model=GitHubDebugResponse,
 )
-async def debug_github_workflow_runs(
+async def debug_github_workflow_runs_fail_post(
     owner: str,
     repo: str,
+    request: WorkflowRunsDebugRequest,
+) -> JSONResponse:
+    params = request.model_dump()
+    return _debug_error_response(
+        owner=owner,
+        repo=repo,
+        route="debugGitHubWorkflowRunsFailPost",
+        params=params,
+        exc=ApiError(
+            ErrorCode.GITHUB_ERROR,
+            "这是 workflow runs POST 调试用的强制错误响应。",
+            status_code=502,
+            suggestion="如果你能看到这个 200 JSON，而 GET 版本失败，就说明问题集中在 query string / GET 链路，而不是 repos 调试路由本身。",
+            details={"probe": "workflow-runs-fail-post", **params},
+        ),
+    )
+
+
+@router.post(
+    "/debug/github-workflow-runs-post",
+    operation_id="debugGitHubWorkflowRunsPost",
+    summary="调试 GitHub workflow runs 查询（POST）",
+    description="与 debugGitHubWorkflowRuns 目标相同，但参数通过 JSON body 传递，用于绕过 GET query string 链路问题。",
+    response_model=GitHubDebugResponse,
+)
+async def debug_github_workflow_runs_post(
+    owner: str,
+    repo: str,
+    request: WorkflowRunsDebugRequest,
     github: Annotated[GitHubClient, Depends(github_client)],
     settings: Annotated[Settings, Depends(get_settings)],
-    head_sha: str | None = Query(default=None),
-    branch: str | None = Query(default=None),
-    workflow_id: str | None = Query(default=None),
-    event: str | None = Query(default=None),
 ) -> JSONResponse:
-    params: dict[str, object] = {"head_sha": head_sha, "branch": branch, "workflow_id": workflow_id, "event": event}
+    params = request.model_dump()
     github_params: dict[str, object] = {"per_page": 5}
-    if head_sha:
-        github_params["head_sha"] = head_sha
-    if branch:
-        github_params["branch"] = branch
-    if event:
-        github_params["event"] = event
+    if request.head_sha:
+        github_params["head_sha"] = request.head_sha
+    if request.branch:
+        github_params["branch"] = request.branch
+    if request.event:
+        github_params["event"] = request.event
     try:
         async def _fetch_runs() -> dict[str, Any]:
             async with httpx.AsyncClient(
@@ -386,13 +426,13 @@ async def debug_github_workflow_runs(
                 headers={
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": settings.github_api_version,
-                    "User-Agent": "gpt-actions-gateway/debug-workflow-runs",
+                    "User-Agent": "gpt-actions-gateway/debug-workflow-runs-post",
                 },
                 follow_redirects=False,
             ) as client:
                 token = await github._auth.get_token(client)
-                if workflow_id:
-                    path = f"/repos/{owner}/{repo}/actions/workflows/{github._q(workflow_id)}/runs"
+                if request.workflow_id:
+                    path = f"/repos/{owner}/{repo}/actions/workflows/{github._q(request.workflow_id)}/runs"
                 else:
                     path = f"/repos/{owner}/{repo}/actions/runs"
                 raw_response = await client.get(path, params=github_params, headers={"Authorization": f"Bearer {token}"})
@@ -407,7 +447,7 @@ async def debug_github_workflow_runs(
         if "github_status" in payload:
             response = GitHubDebugResponse(
                 ok=False,
-                route="debugGitHubWorkflowRuns",
+                route="debugGitHubWorkflowRunsPost",
                 version=DEBUG_ROUTE_VERSION,
                 owner=owner,
                 repo=repo,
@@ -417,7 +457,7 @@ async def debug_github_workflow_runs(
             return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
         response = GitHubDebugResponse(
             ok=True,
-            route="debugGitHubWorkflowRuns",
+            route="debugGitHubWorkflowRunsPost",
             version=DEBUG_ROUTE_VERSION,
             owner=owner,
             repo=repo,
@@ -425,97 +465,61 @@ async def debug_github_workflow_runs(
             payload=_summarize_workflow_runs_payload(payload),
         )
         return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
-    except TimeoutError as exc:
+    except TimeoutError:
         return _debug_error_response(
             owner=owner,
             repo=repo,
-            route="debugGitHubWorkflowRuns",
+            route="debugGitHubWorkflowRunsPost",
             params={**params, "debug_timeout_seconds": 6},
             exc=ApiError(
                 ErrorCode.GITHUB_ERROR,
-                "GitHub workflow runs 调试请求超时。",
+                "GitHub workflow runs POST 调试请求超时。",
                 status_code=502,
-                suggestion="这通常表示 runs 接口响应过慢或外部链路超时；请改用更小查询范围，或检查服务到 GitHub 的网络连通性。",
-                details={"head_sha": head_sha, "branch": branch, "workflow_id": workflow_id, "event": event},
+                suggestion="这通常表示 runs 接口响应过慢或外部链路超时；请检查服务到 GitHub 的网络连通性。",
+                details=params,
             ),
         )
     except Exception as exc:
-        return _debug_error_response(owner=owner, repo=repo, route="debugGitHubWorkflowRuns", params=params, exc=exc)
+        return _debug_error_response(owner=owner, repo=repo, route="debugGitHubWorkflowRunsPost", params=params, exc=exc)
 
 
-@router.get(
-    "/debug/github-jobs",
-    operation_id="debugGitHubJobs",
-    summary="调试 GitHub workflow jobs 查询",
-    description="只调用 GitHub workflow jobs 查询，并始终返回 200 JSON，用于隔离 jobs 查询阶段的问题。",
-    response_model=GitHubDebugResponse,
-)
-async def debug_github_jobs(
-    owner: str,
-    repo: str,
-    github: Annotated[GitHubClient, Depends(github_client)],
-    run_id: int = Query(..., ge=1),
-    run_attempt: int | None = Query(default=None, ge=1),
-) -> JSONResponse:
-    params = {"run_id": run_id, "run_attempt": run_attempt}
-    try:
-        payload = await github.list_jobs_for_run(owner, repo, run_id, run_attempt=run_attempt)
-        response = GitHubDebugResponse(
-            ok=True,
-            route="debugGitHubJobs",
-            version=DEBUG_ROUTE_VERSION,
-            owner=owner,
-            repo=repo,
-            params=params,
-            payload=payload,
-        )
-        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
-    except Exception as exc:
-        return _debug_error_response(owner=owner, repo=repo, route="debugGitHubJobs", params=params, exc=exc)
-
-
-@router.get(
-    "/ci/status-debug",
-    operation_id="debugGetCiStatus",
-    summary="调试 GitHub Actions 状态查询",
-    description="始终返回 200。成功时返回标准 CI 状态；失败时把内部错误码、HTTP 状态、建议和详细信息放进 error 字段，便于 GPT Actions 排查查询异常。",
+@router.post(
+    "/ci/status-debug/query",
+    operation_id="debugQueryCiStatus",
+    summary="通过 POST 调试 GitHub Actions 状态查询",
+    description="与 debugGetCiStatus 逻辑相同，但参数通过 JSON body 传递，用于绕过 GET query string 链路问题，并始终返回 200 JSON。",
     response_model=CIDebugStatusResponse,
 )
-async def debug_get_ci_status(
+async def debug_query_ci_status(
     owner: str,
     repo: str,
+    request: CIStatusQueryRequest,
     github: Annotated[GitHubClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
-    commit_sha: str | None = Query(default=None),
-    branch: str | None = Query(default=None),
-    pr_number: int | None = Query(default=None, ge=1),
-    workflow_id: str | None = Query(default=None, description="Workflow 文件名或 ID，可选。"),
-    event: str | None = Query(default=None, description="push 或 pull_request，可选。"),
-    created_after: str | None = Query(default=None, description="GitHub created >= 过滤条件，ISO 日期或时间。"),
 ) -> JSONResponse:
     service = CIService(github, pol, settings)
     response = CIDebugStatusResponse(
         ok=False,
         owner=owner,
         repo=repo,
-        commit_sha=commit_sha,
-        branch=branch,
-        pr_number=pr_number,
-        workflow_id=workflow_id,
-        event=event,
-        created_after=created_after,
-        )
+        commit_sha=request.commit_sha,
+        branch=request.branch,
+        pr_number=request.pr_number,
+        workflow_id=request.workflow_id,
+        event=request.event,
+        created_after=request.created_after,
+    )
     try:
         result = await service.get_ci_status(
             owner,
             repo,
-            commit_sha=commit_sha,
-            branch=branch,
-            pr_number=pr_number,
-            workflow_id=workflow_id,
-            event=event,
-            created_after=created_after,
+            commit_sha=request.commit_sha,
+            branch=request.branch,
+            pr_number=request.pr_number,
+            workflow_id=request.workflow_id,
+            event=request.event,
+            created_after=request.created_after,
         )
         response.ok = True
         response.result = result
@@ -534,7 +538,7 @@ async def debug_get_ci_status(
         response.error = CIDebugError(
             status_code=502,
             error_code=str(ErrorCode.GITHUB_ERROR),
-            message="CI 状态查询发生未处理异常。",
+            message="CI 状态 POST 调试查询发生未处理异常。",
             suggestion="检查服务日志和外部网络连通性，然后重试同一请求。",
             details={"error": str(exc), "exception_repr": repr(exc)},
             exception_type=type(exc).__name__,
@@ -542,25 +546,29 @@ async def debug_get_ci_status(
         return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
 
 
-@router.get(
-    "/ci/failed-log",
-    operation_id="getFailedCiLog",
-    summary="Get concise failed CI log excerpts",
-    description="Downloads failed job logs and returns error summaries, annotations, an excerpt around failure, and final lines. Output is capped by MAX_LOG_BYTES and MAX_LOG_LINES.",
+@router.post(
+    "/ci/failed-log/query",
+    operation_id="queryFailedCiLog",
+    summary="通过 POST 获取失败 CI 日志摘要",
+    description="与 getFailedCiLog 逻辑相同，但参数通过 JSON body 传递，用于绕过某些动作网关对 GET query string 的处理问题。",
     response_model=FailedCILogResponse,
 )
-async def get_failed_ci_log(
+async def query_failed_ci_log(
     owner: str,
     repo: str,
+    request: FailedLogQueryRequest,
     github: Annotated[GitHubClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
-    run_id: int = Query(..., ge=1),
-    run_attempt: int | None = Query(default=None, ge=1),
-    job_id: int | None = Query(default=None, ge=1),
-    max_lines: int | None = Query(default=None, ge=1),
 ) -> FailedCILogResponse:
-    return await CIService(github, pol, settings).get_failed_ci_log(owner, repo, run_id=run_id, run_attempt=run_attempt, job_id=job_id, max_lines=max_lines)
+    return await CIService(github, pol, settings).get_failed_ci_log(
+        owner,
+        repo,
+        run_id=request.run_id,
+        run_attempt=request.run_attempt,
+        job_id=request.job_id,
+        max_lines=request.max_lines,
+    )
 
 
 @router.post(

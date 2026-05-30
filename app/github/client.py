@@ -180,6 +180,23 @@ class GitHubClient:
     async def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}")
 
+    async def merge_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        *,
+        merge_method: str,
+        commit_title: str | None = None,
+        commit_message: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"merge_method": merge_method}
+        if commit_title is not None:
+            payload["commit_title"] = commit_title
+        if commit_message is not None:
+            payload["commit_message"] = commit_message
+        return await self._request("PUT", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", json=payload)
+
     async def list_workflow_runs(
         self,
         owner: str,

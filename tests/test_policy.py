@@ -50,5 +50,17 @@ def test_binary_extension_blocked() -> None:
     assert exc.value.error_code == ErrorCode.BINARY_FILE_NOT_ALLOWED
 
 
+def test_auto_merge_blocked_by_default() -> None:
+    policy = make_policy()
+    with pytest.raises(ApiError) as exc:
+        policy.assert_auto_merge_allowed()
+    assert exc.value.error_code == ErrorCode.AUTO_MERGE_NOT_ALLOWED
+
+
+def test_auto_merge_can_be_enabled() -> None:
+    policy = make_policy(allow_auto_merge=True)
+    policy.assert_auto_merge_allowed()
+
+
 def test_sanitize_purpose_slug() -> None:
     assert sanitize_purpose_slug("Fix Windows CI!!") == "fix-windows-ci"

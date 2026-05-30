@@ -20,9 +20,9 @@ def create_app() -> FastAPI:
         title="GPT Actions GitHub Gateway",
         version="1.0.0",
         description=(
-            "Task-oriented FastAPI gateway for Custom GPT Actions. "
-            "It safely reads repository files, creates gpt/* branches, commits text changes, creates pull requests, "
-            "and summarizes GitHub Actions CI status/logs without exposing the raw GitHub API."
+            "面向 Custom GPT Actions 的任务型 FastAPI 网关。"
+            "它会以受限方式读取仓库文件、创建 gpt/* 工作分支、提交文本修改、创建拉取请求、按需合并已审核的 GPT PR，"
+            "并汇总 GitHub Actions CI 状态与日志，而不会把原始 GitHub API 直接暴露给 GPT。"
         ),
         servers=[{"url": settings.public_base_url.rstrip("/")}],
     )

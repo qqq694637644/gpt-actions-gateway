@@ -143,6 +143,15 @@ class Policy:
         if branch.startswith(forbidden_prefixes):
             raise ApiError(ErrorCode.BRANCH_NOT_ALLOWED, f"Branch {branch!r} is forbidden for writes.", status_code=403)
 
+    def assert_auto_merge_allowed(self) -> None:
+        if not self.settings.allow_auto_merge:
+            raise ApiError(
+                ErrorCode.AUTO_MERGE_NOT_ALLOWED,
+                "自动合并 PR 已被禁用。",
+                status_code=403,
+                suggestion="确认风险后，将 ALLOW_AUTO_MERGE=true 并重启服务。",
+            )
+
     def assert_tree_path_allowed(self, path: str | None) -> str | None:
         if path is None or path == "":
             return None
