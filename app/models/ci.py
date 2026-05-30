@@ -92,6 +92,17 @@ class RepoDebugPingResponse(GatewayBaseModel):
     allow_rerun_ci: bool
 
 
+class GitHubDebugResponse(GatewayBaseModel):
+    ok: bool
+    route: str
+    version: str
+    owner: str
+    repo: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] | list[Any] | None = None
+    error: CIDebugError | None = None
+
+
 class Annotation(GatewayBaseModel):
     line: int | None = None
     message: str

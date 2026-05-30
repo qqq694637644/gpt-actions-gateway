@@ -17,6 +17,7 @@ from app.models.ci import (
     CIStatusResponse,
     FailedCILogResponse,
     GatewayDebugPingResponse,
+    GitHubDebugResponse,
     RepoDebugPingResponse,
     RerunCIRequest,
     RerunCIResponse,
@@ -255,6 +256,145 @@ async def debug_repo_ping(
         allow_workflow_edit=settings.allow_workflow_edit,
         allow_rerun_ci=settings.allow_rerun_ci,
     )
+
+
+def _debug_error_response(
+    *,
+    owner: str,
+    repo: str,
+    route: str,
+    params: dict[str, object],
+    exc: Exception,
+) -> JSONResponse:
+    if isinstance(exc, ApiError):
+        error = CIDebugError(
+            status_code=exc.status_code,
+            error_code=str(exc.error_code),
+            message=exc.message,
+            suggestion=exc.suggestion,
+            details=exc.details,
+            exception_type=type(exc).__name__,
+        )
+    else:
+        error = CIDebugError(
+            status_code=502,
+            error_code=str(ErrorCode.GITHUB_ERROR),
+            message="GitHub 调试请求发生未处理异常。",
+            suggestion="检查服务日志和外部网络连通性，然后重试同一请求。",
+            details={"error": str(exc), "exception_repr": repr(exc)},
+            exception_type=type(exc).__name__,
+        )
+    response = GitHubDebugResponse(
+        ok=False,
+        route=route,
+        version=DEBUG_ROUTE_VERSION,
+        owner=owner,
+        repo=repo,
+        params=params,
+        error=error,
+    )
+    return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+
+
+@router.get(
+    "/debug/github-pull",
+    operation_id="debugGitHubPullRequest",
+    summary="调试 GitHub PR 查询",
+    description="只调用 GitHub pull request 查询，并始终返回 200 JSON，用于隔离 PR 查询阶段的问题。",
+    response_model=GitHubDebugResponse,
+)
+async def debug_github_pull_request(
+    owner: str,
+    repo: str,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pr_number: int = Query(..., ge=1),
+) -> JSONResponse:
+    params = {"pr_number": pr_number}
+    try:
+        payload = await github.get_pull_request(owner, repo, pr_number)
+        response = GitHubDebugResponse(
+            ok=True,
+            route="debugGitHubPullRequest",
+            version=DEBUG_ROUTE_VERSION,
+            owner=owner,
+            repo=repo,
+            params=params,
+            payload=payload,
+        )
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    except Exception as exc:
+        return _debug_error_response(owner=owner, repo=repo, route="debugGitHubPullRequest", params=params, exc=exc)
+
+
+@router.get(
+    "/debug/github-workflow-runs",
+    operation_id="debugGitHubWorkflowRuns",
+    summary="调试 GitHub workflow runs 查询",
+    description="只调用 GitHub workflow runs 查询，并始终返回 200 JSON，用于隔离 runs 查询阶段的问题。",
+    response_model=GitHubDebugResponse,
+)
+async def debug_github_workflow_runs(
+    owner: str,
+    repo: str,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    head_sha: str | None = Query(default=None),
+    branch: str | None = Query(default=None),
+    workflow_id: str | None = Query(default=None),
+    event: str | None = Query(default=None),
+) -> JSONResponse:
+    params: dict[str, object] = {"head_sha": head_sha, "branch": branch, "workflow_id": workflow_id, "event": event}
+    github_params: dict[str, object] = {"per_page": 20}
+    if head_sha:
+        github_params["head_sha"] = head_sha
+    if branch:
+        github_params["branch"] = branch
+    if event:
+        github_params["event"] = event
+    try:
+        payload = await github.list_workflow_runs(owner, repo, workflow_id=workflow_id, params=github_params)
+        response = GitHubDebugResponse(
+            ok=True,
+            route="debugGitHubWorkflowRuns",
+            version=DEBUG_ROUTE_VERSION,
+            owner=owner,
+            repo=repo,
+            params=params,
+            payload=payload,
+        )
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    except Exception as exc:
+        return _debug_error_response(owner=owner, repo=repo, route="debugGitHubWorkflowRuns", params=params, exc=exc)
+
+
+@router.get(
+    "/debug/github-jobs",
+    operation_id="debugGitHubJobs",
+    summary="调试 GitHub workflow jobs 查询",
+    description="只调用 GitHub workflow jobs 查询，并始终返回 200 JSON，用于隔离 jobs 查询阶段的问题。",
+    response_model=GitHubDebugResponse,
+)
+async def debug_github_jobs(
+    owner: str,
+    repo: str,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    run_id: int = Query(..., ge=1),
+    run_attempt: int | None = Query(default=None, ge=1),
+) -> JSONResponse:
+    params = {"run_id": run_id, "run_attempt": run_attempt}
+    try:
+        payload = await github.list_jobs_for_run(owner, repo, run_id, run_attempt=run_attempt)
+        response = GitHubDebugResponse(
+            ok=True,
+            route="debugGitHubJobs",
+            version=DEBUG_ROUTE_VERSION,
+            owner=owner,
+            repo=repo,
+            params=params,
+            payload=payload,
+        )
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    except Exception as exc:
+        return _debug_error_response(owner=owner, repo=repo, route="debugGitHubJobs", params=params, exc=exc)
 
 
 @router.get(
