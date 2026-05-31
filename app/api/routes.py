@@ -13,8 +13,14 @@ from app.models.branches import ContinueWorkBranchRequest, ContinueWorkBranchRes
 from app.models.ci import (
     CIStatusQueryRequest,
     CIStatusResponse,
+    DeleteCacheRequest,
+    DeleteCacheResponse,
+    DispatchWorkflowRequest,
+    DispatchWorkflowResponse,
     FailedCILogResponse,
     FailedLogQueryRequest,
+    GetCiJobRequest,
+    GetCiJobResponse,
     GetCiJobsRequest,
     GetCiJobsResponse,
     GetCiRunRequest,
@@ -24,8 +30,14 @@ from app.models.ci import (
     JobLogResponse,
     ListArtifactsRequest,
     ListArtifactsResponse,
+    ListCachesRequest,
+    ListCachesResponse,
     ReadArtifactTextRequest,
     ReadArtifactTextResponse,
+    RerunWorkflowJobRequest,
+    RerunWorkflowJobResponse,
+    RerunWorkflowRunRequest,
+    RerunWorkflowRunResponse,
     RunLogResponse,
 )
 from app.models.pulls import (
@@ -109,7 +121,7 @@ async def prepare_workspace(
     return await WorkspaceService(github, pol, settings, manager, audit).prepare(owner, repo, request)
 
 
-@router.post("/workspaces/prepare-mirror", operation_id="prepareWorkspaceMirror", summary="Prepare or refresh the backend Git mirror", response_model=PrepareWorkspaceMirrorResponse)
+@router.post("/workspaces/prepare-mirror", operation_id="prepareWorkspaceMirror", summary="Prepare or refresh the backend Git mirror", response_model=PrepareWorkspaceMirrorResponse, include_in_schema=False)
 async def prepare_workspace_mirror(
     owner: str,
     repo: str,
@@ -123,7 +135,7 @@ async def prepare_workspace_mirror(
     return await WorkspaceService(github, pol, settings, manager, audit).prepare_mirror(owner, repo, request)
 
 
-@router.post("/workspaces/prepare-from-mirror", operation_id="prepareWorkspaceFromMirror", summary="Prepare a backend Git workspace from an existing mirror", response_model=PrepareWorkspaceResponse)
+@router.post("/workspaces/prepare-from-mirror", operation_id="prepareWorkspaceFromMirror", summary="Prepare a backend Git workspace from an existing mirror", response_model=PrepareWorkspaceResponse, include_in_schema=False)
 async def prepare_workspace_from_mirror(
     owner: str,
     repo: str,
@@ -255,7 +267,7 @@ async def create_work_branch(
     return await BranchService(github, pol, settings, audit).create_work_branch(owner, repo, request)
 
 
-@router.post("/branches/continue-work-branch", operation_id="continueWorkBranch", summary="Continue an existing gpt/* work branch", response_model=ContinueWorkBranchResponse)
+@router.post("/branches/continue-work-branch", operation_id="continueWorkBranch", summary="Continue an existing gpt/* work branch", response_model=ContinueWorkBranchResponse, include_in_schema=False)
 async def continue_work_branch(
     owner: str,
     repo: str,
@@ -315,6 +327,19 @@ async def query_ci_status(
     return await CIService(github, pol, settings).get_ci_status(owner, repo, request)
 
 
+@router.post("/ci/workflows/dispatch", operation_id="dispatchWorkflow", summary="Manually trigger a workflow_dispatch workflow", response_model=DispatchWorkflowResponse)
+async def dispatch_workflow(
+    owner: str,
+    repo: str,
+    request: DispatchWorkflowRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> DispatchWorkflowResponse:
+    return await CIService(github, pol, settings, audit).dispatch_workflow(owner, repo, request)
+
+
 @router.post("/ci/failed-log/query", operation_id="queryFailedCiLog", summary="Read failed CI log summary", response_model=FailedCILogResponse)
 async def query_failed_ci_log(owner: str, repo: str, request: FailedLogQueryRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> FailedCILogResponse:
     return await CIService(github, pol, settings).get_failed_ci_log(owner, repo, request)
@@ -325,9 +350,40 @@ async def get_ci_run(owner: str, repo: str, request: GetCiRunRequest, github: An
     return await CIService(github, pol, settings).get_ci_run(owner, repo, request)
 
 
+@router.post("/ci/runs/rerun", operation_id="rerunWorkflowRun", summary="Rerun an entire workflow run", response_model=RerunWorkflowRunResponse)
+async def rerun_workflow_run(
+    owner: str,
+    repo: str,
+    request: RerunWorkflowRunRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> RerunWorkflowRunResponse:
+    return await CIService(github, pol, settings, audit).rerun_workflow_run(owner, repo, request)
+
+
 @router.post("/ci/jobs/list", operation_id="getCiJobs", summary="List jobs for a workflow run", response_model=GetCiJobsResponse)
 async def get_ci_jobs(owner: str, repo: str, request: GetCiJobsRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiJobsResponse:
     return await CIService(github, pol, settings).get_ci_jobs(owner, repo, request)
+
+
+@router.post("/ci/jobs/get", operation_id="getCiJob", summary="Get a workflow job", response_model=GetCiJobResponse)
+async def get_ci_job(owner: str, repo: str, request: GetCiJobRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiJobResponse:
+    return await CIService(github, pol, settings).get_ci_job(owner, repo, request)
+
+
+@router.post("/ci/jobs/rerun", operation_id="rerunWorkflowJob", summary="Rerun a single workflow job", response_model=RerunWorkflowJobResponse)
+async def rerun_workflow_job(
+    owner: str,
+    repo: str,
+    request: RerunWorkflowJobRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> RerunWorkflowJobResponse:
+    return await CIService(github, pol, settings, audit).rerun_workflow_job(owner, repo, request)
 
 
 @router.post("/ci/jobs/log", operation_id="getJobLog", summary="Read a workflow job log", response_model=JobLogResponse)
@@ -348,3 +404,21 @@ async def list_artifacts(owner: str, repo: str, request: ListArtifactsRequest, g
 @router.post("/ci/artifacts/read-text", operation_id="readArtifactText", summary="Read text files from an artifact zip", response_model=ReadArtifactTextResponse)
 async def read_artifact_text(owner: str, repo: str, request: ReadArtifactTextRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ReadArtifactTextResponse:
     return await CIService(github, pol, settings).read_artifact_text(owner, repo, request)
+
+
+@router.post("/ci/caches/list", operation_id="listCaches", summary="List GitHub Actions caches", response_model=ListCachesResponse)
+async def list_caches(owner: str, repo: str, request: ListCachesRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ListCachesResponse:
+    return await CIService(github, pol, settings).list_caches(owner, repo, request)
+
+
+@router.post("/ci/caches/delete", operation_id="deleteCache", summary="Delete a GitHub Actions cache by id or key", response_model=DeleteCacheResponse)
+async def delete_cache(
+    owner: str,
+    repo: str,
+    request: DeleteCacheRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> DeleteCacheResponse:
+    return await CIService(github, pol, settings, audit).delete_cache(owner, repo, request)

@@ -11,8 +11,6 @@ OPENAPI_SERVER_URL = "https://estranged-evergreen-hatchet.ngrok-free.dev/github"
 
 PUBLIC_OPERATION_IDS = {
     "prepareWorkspace",
-    "prepareWorkspaceMirror",
-    "prepareWorkspaceFromMirror",
     "workspaceExecPwsh",
     "workspaceStatus",
     "workspaceDiff",
@@ -21,7 +19,6 @@ PUBLIC_OPERATION_IDS = {
     "workspaceCommitAndPush",
     "workspaceReset",
     "createWorkBranch",
-    "continueWorkBranch",
     "createPullRequest",
     "getPullRequest",
     "listPullRequests",
@@ -30,13 +27,19 @@ PUBLIC_OPERATION_IDS = {
     "mergePullRequest",
     "commentPullRequest",
     "queryCiStatus",
+    "dispatchWorkflow",
     "queryFailedCiLog",
     "getCiRun",
+    "rerunWorkflowRun",
     "getCiJobs",
+    "getCiJob",
+    "rerunWorkflowJob",
     "getJobLog",
     "getRunLog",
     "listArtifacts",
     "readArtifactText",
+    "listCaches",
+    "deleteCache",
 }
 
 

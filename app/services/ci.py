@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import io
 import zipfile
+from datetime import datetime, timezone
 from typing import Any
 
 from app.ci.logs import parse_failed_log
@@ -11,6 +12,7 @@ from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
 from app.models.ci import (
     Annotation,
+    ActionCache,
     Artifact,
     ArtifactTextFile,
     CIJob,
@@ -18,9 +20,15 @@ from app.models.ci import (
     CIStep,
     CIStatusQueryRequest,
     CIStatusResponse,
+    DeleteCacheRequest,
+    DeleteCacheResponse,
+    DispatchWorkflowRequest,
+    DispatchWorkflowResponse,
     FailedCILogResponse,
     FailedJobLog,
     FailedStep,
+    GetCiJobRequest,
+    GetCiJobResponse,
     GetCiJobsRequest,
     GetCiJobsResponse,
     GetCiRunRequest,
@@ -30,12 +38,19 @@ from app.models.ci import (
     JobLogResponse,
     ListArtifactsRequest,
     ListArtifactsResponse,
+    ListCachesRequest,
+    ListCachesResponse,
     ReadArtifactTextRequest,
     ReadArtifactTextResponse,
+    RerunWorkflowJobRequest,
+    RerunWorkflowJobResponse,
+    RerunWorkflowRunRequest,
+    RerunWorkflowRunResponse,
     RunLogFile,
     RunLogResponse,
 )
-from app.policy.rules import Policy
+from app.policy.rules import Policy, is_sha
+from app.storage.audit import AuditStore, canonical_hash
 
 _TEXT_ARTIFACT_PATTERNS = [
     "*.txt",
@@ -55,10 +70,11 @@ _TEXT_ARTIFACT_PATTERNS = [
 
 
 class CIService:
-    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings) -> None:
+    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
         self.github = github
         self.policy = policy
         self.settings = settings
+        self.audit = audit
 
     async def get_ci_status(self, owner: str, repo: str, request: CIStatusQueryRequest) -> CIStatusResponse:
         self.policy.assert_repo_allowed(owner, repo)
@@ -127,6 +143,129 @@ class CIService:
         payload = await self.github.list_jobs_for_run(owner, repo, request.run_id, run_attempt=request.run_attempt)
         jobs = [self._job_from_github(job) for job in payload.get("jobs", [])]
         return GetCiJobsResponse(run_id=request.run_id, run_attempt=request.run_attempt, jobs=jobs, total_count=int(payload.get("total_count") or len(jobs)))
+
+    async def get_ci_job(self, owner: str, repo: str, request: GetCiJobRequest) -> GetCiJobResponse:
+        self.policy.assert_repo_allowed(owner, repo)
+        raw_job = await self.github.get_workflow_job(owner, repo, request.job_id)
+        return GetCiJobResponse(job=self._job_from_github(raw_job))
+
+    async def dispatch_workflow(self, owner: str, repo: str, request: DispatchWorkflowRequest) -> DispatchWorkflowResponse:
+        self.policy.assert_repo_allowed(owner, repo)
+        ref = self._assert_ref_allowed(request.ref)
+        scope = f"{owner}/{repo}:dispatch_workflow"
+        payload = self._idempotency_payload(request.model_dump(), redact_keys={"inputs"})
+        if request.idempotency_key and self.audit:
+            cached = self.audit.get_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload)
+            if cached:
+                return DispatchWorkflowResponse(**cached)
+
+        await self.github.get_workflow(owner, repo, request.workflow_id)
+        created_after = _utc_now_iso()
+        await self.github.dispatch_workflow(owner, repo, request.workflow_id, ref=ref, inputs=request.inputs or None)
+        response = DispatchWorkflowResponse(
+            workflow_id=request.workflow_id,
+            ref=ref,
+            accepted=True,
+            created_after=created_after,
+            query_hint=self._dispatch_query_hint(request.workflow_id, ref, created_after),
+        )
+        if request.idempotency_key and self.audit:
+            self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
+        return response
+
+    async def rerun_workflow_run(self, owner: str, repo: str, request: RerunWorkflowRunRequest) -> RerunWorkflowRunResponse:
+        self.policy.assert_repo_allowed(owner, repo)
+        scope = f"{owner}/{repo}:rerun_workflow_run"
+        payload = request.model_dump()
+        if request.idempotency_key and self.audit:
+            cached = self.audit.get_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload)
+            if cached:
+                return RerunWorkflowRunResponse(**cached)
+
+        raw_run = await self.github.get_workflow_run(owner, repo, request.run_id)
+        await self.github.rerun_workflow_run(owner, repo, request.run_id, enable_debug_logging=request.enable_debug_logging)
+        response = RerunWorkflowRunResponse(run_id=request.run_id, accepted=True, query_hint=self._run_query_hint(raw_run))
+        if request.idempotency_key and self.audit:
+            self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
+        return response
+
+    async def rerun_workflow_job(self, owner: str, repo: str, request: RerunWorkflowJobRequest) -> RerunWorkflowJobResponse:
+        self.policy.assert_repo_allowed(owner, repo)
+        scope = f"{owner}/{repo}:rerun_workflow_job"
+        payload = request.model_dump()
+        if request.idempotency_key and self.audit:
+            cached = self.audit.get_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload)
+            if cached:
+                return RerunWorkflowJobResponse(**cached)
+
+        raw_job = await self.github.get_workflow_job(owner, repo, request.job_id)
+        run_id = raw_job.get("run_id")
+        raw_run = await self.github.get_workflow_run(owner, repo, int(run_id)) if run_id else None
+        await self.github.rerun_workflow_job(owner, repo, request.job_id, enable_debug_logging=request.enable_debug_logging)
+        query_hint: dict[str, Any] = {"job_id": request.job_id}
+        if raw_run:
+            query_hint.update(self._run_query_hint(raw_run))
+        elif run_id:
+            query_hint["run_id"] = int(run_id)
+        response = RerunWorkflowJobResponse(job_id=request.job_id, accepted=True, query_hint=query_hint)
+        if request.idempotency_key and self.audit:
+            self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
+        return response
+
+    async def list_caches(self, owner: str, repo: str, request: ListCachesRequest) -> ListCachesResponse:
+        self.policy.assert_repo_allowed(owner, repo)
+        params = self._cache_query_params(request)
+        payload = await self.github.list_actions_caches(owner, repo, params=params)
+        caches = [self._cache_from_github(item) for item in payload.get("actions_caches", [])[: request.max_results]]
+        total_count = int(payload.get("total_count") or len(caches))
+        truncated = total_count > len(caches)
+        warning = "Results were truncated; use key/ref filters or increase max_results." if truncated else None
+        return ListCachesResponse(total_count=total_count, caches=caches, truncated=truncated, warning=warning)
+
+    async def delete_cache(self, owner: str, repo: str, request: DeleteCacheRequest) -> DeleteCacheResponse:
+        self.policy.assert_repo_allowed(owner, repo)
+        scope = f"{owner}/{repo}:delete_cache"
+        payload = request.model_dump()
+        if request.idempotency_key and self.audit:
+            cached = self.audit.get_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload)
+            if cached:
+                return DeleteCacheResponse(**cached)
+
+        matched = await self._match_caches_for_delete(owner, repo, request)
+        matched_count = len(matched)
+        if matched_count == 0:
+            response = DeleteCacheResponse(deleted=False, dry_run=request.dry_run, matched_count=0, deleted_count=0, deleted_caches=[], warning="No cache matched the selector.")
+            self._record_cache_delete_audit(owner, repo, request, response)
+            if request.idempotency_key and self.audit:
+                self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
+            return response
+        if matched_count > request.max_delete:
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                "Cache selector matched more entries than max_delete allows.",
+                status_code=409,
+                suggestion="Use cache_id for a precise delete, add a ref filter, increase max_delete after review, or run dry_run first.",
+                details={"matched_count": matched_count, "max_delete": request.max_delete},
+            )
+
+        deleted_count = 0
+        if not request.dry_run:
+            for cache in matched:
+                await self.github.delete_actions_cache(owner, repo, cache.cache_id)
+                deleted_count += 1
+        warning = "Dry run only; no cache was deleted." if request.dry_run else None
+        response = DeleteCacheResponse(
+            deleted=deleted_count > 0,
+            dry_run=request.dry_run,
+            matched_count=matched_count,
+            deleted_count=deleted_count,
+            deleted_caches=matched,
+            warning=warning,
+        )
+        self._record_cache_delete_audit(owner, repo, request, response)
+        if request.idempotency_key and self.audit:
+            self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
+        return response
 
     async def get_failed_ci_log(self, owner: str, repo: str, request: FailedLogQueryRequest) -> FailedCILogResponse:
         self.policy.assert_repo_allowed(owner, repo)
@@ -242,6 +381,148 @@ class CIService:
             raise ApiError(ErrorCode.CI_LOG_NOT_READY, "Artifact archive is not a valid zip file.", status_code=502) from exc
         return ReadArtifactTextResponse(artifact_id=request.artifact_id, files=files, entries=files, total_files=len(files), truncated=truncated)
 
+    def _assert_ref_allowed(self, ref: str) -> str:
+        normalized = ref.strip()
+        if not normalized or any(ch.isspace() for ch in normalized):
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "ref must be a non-empty branch, tag, or SHA without whitespace.", status_code=422)
+        if is_sha(normalized):
+            return normalized
+        if normalized.startswith("refs/heads/"):
+            self.policy.assert_read_ref_allowed(normalized[len("refs/heads/") :])
+            return normalized
+        if normalized.startswith("heads/"):
+            branch = normalized[len("heads/") :]
+            self.policy.assert_read_ref_allowed(branch)
+            return branch
+        if normalized.startswith("refs/tags/") or normalized.startswith("tags/"):
+            tag = normalized.split("/", 2)[-1]
+            if not tag or any(ch in tag for ch in "*?[]"):
+                raise ApiError(ErrorCode.VALIDATION_ERROR, "Tag refs must be explicit and cannot contain wildcard characters.", status_code=422)
+            return normalized
+        self.policy.assert_read_ref_allowed(normalized)
+        return normalized
+
+    def _cache_query_params(self, request: ListCachesRequest) -> dict[str, Any]:
+        params: dict[str, Any] = {"per_page": request.max_results, "sort": request.sort, "direction": request.direction}
+        if request.key:
+            params["key"] = request.key.strip()
+        if request.ref:
+            params["ref"] = self._cache_ref_for_github(request.ref)
+        return params
+
+    def _cache_ref_for_github(self, ref: str) -> str:
+        normalized = ref.strip()
+        if not normalized or any(ch.isspace() for ch in normalized):
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "ref must be non-empty and cannot contain whitespace.", status_code=422)
+        if is_sha(normalized):
+            return normalized
+        if normalized.startswith("refs/heads/"):
+            self.policy.assert_read_ref_allowed(normalized[len("refs/heads/") :])
+            return normalized
+        if normalized.startswith("refs/tags/"):
+            tag = normalized[len("refs/tags/") :]
+            if not tag or any(ch in tag for ch in "*?[]"):
+                raise ApiError(ErrorCode.VALIDATION_ERROR, "Tag refs must be explicit and cannot contain wildcard characters.", status_code=422)
+            return normalized
+        self.policy.assert_read_ref_allowed(normalized)
+        return f"refs/heads/{normalized}"
+
+    async def _match_caches_for_delete(self, owner: str, repo: str, request: DeleteCacheRequest) -> list[ActionCache]:
+        if request.cache_id is not None:
+            payload = await self.github.list_actions_caches(owner, repo, params={"per_page": 100})
+            for item in payload.get("actions_caches", []):
+                if int(item.get("id", 0)) == request.cache_id:
+                    return [self._cache_from_github(item)]
+            return [ActionCache(cache_id=request.cache_id)]
+
+        key = self._validate_cache_delete_key(request.key or "")
+        params: dict[str, Any] = {"per_page": 100, "key": key, "sort": "last_accessed_at", "direction": "desc"}
+        if request.ref:
+            params["ref"] = self._cache_ref_for_github(request.ref)
+        payload = await self.github.list_actions_caches(owner, repo, params=params)
+        raw_items = payload.get("actions_caches", [])
+        total_count = int(payload.get("total_count") or len(raw_items))
+        if total_count > len(raw_items):
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                "Cache selector matched too many entries to safely enumerate for deletion.",
+                status_code=409,
+                suggestion="Use a more specific key/ref filter or delete by cache_id.",
+                details={"total_count": total_count, "enumerated_count": len(raw_items)},
+            )
+        return [self._cache_from_github(item) for item in raw_items]
+
+    @staticmethod
+    def _validate_cache_delete_key(key: str) -> str:
+        normalized = key.strip()
+        if len(normalized) < 3:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Cache key must be at least 3 characters for deletion.", status_code=422)
+        if any(ch in normalized for ch in "*?[]"):
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Wildcard cache deletion is not allowed; use an explicit key prefix or cache_id.", status_code=422)
+        return normalized
+
+    def _record_cache_delete_audit(self, owner: str, repo: str, request: DeleteCacheRequest, response: DeleteCacheResponse) -> None:
+        if not self.audit:
+            return
+        self.audit.record_event(
+            request_id=None,
+            method="INTERNAL",
+            path=f"/repos/{owner}/{repo}/ci/caches/delete",
+            status_code=200,
+            repo=f"{owner}/{repo}",
+            idempotency_key=request.idempotency_key,
+            metadata={
+                "cache_id": request.cache_id,
+                "key": request.key,
+                "ref": request.ref,
+                "dry_run": request.dry_run,
+                "max_delete": request.max_delete,
+                "matched_count": response.matched_count,
+                "deleted_count": response.deleted_count,
+            },
+        )
+
+    @staticmethod
+    def _cache_from_github(item: dict[str, Any]) -> ActionCache:
+        return ActionCache(
+            cache_id=int(item["id"]),
+            key=item.get("key"),
+            ref=item.get("ref"),
+            version=item.get("version"),
+            size_in_bytes=item.get("size_in_bytes"),
+            created_at=item.get("created_at"),
+            last_accessed_at=item.get("last_accessed_at"),
+        )
+
+    @staticmethod
+    def _dispatch_query_hint(workflow_id: str, ref: str, created_after: str) -> dict[str, Any]:
+        query_hint: dict[str, Any] = {"workflow_id": workflow_id, "event": "workflow_dispatch", "created_after": created_after}
+        if is_sha(ref):
+            query_hint["commit_sha"] = ref
+        elif ref.startswith("refs/heads/"):
+            query_hint["branch"] = ref[len("refs/heads/") :]
+        elif not ref.startswith(("refs/tags/", "tags/")):
+            query_hint["branch"] = ref
+        return query_hint
+
+    @staticmethod
+    def _run_query_hint(raw_run: dict[str, Any]) -> dict[str, Any]:
+        query_hint: dict[str, Any] = {"run_id": raw_run.get("id")}
+        for source_key, target_key in (("head_sha", "commit_sha"), ("head_branch", "branch"), ("workflow_id", "workflow_id"), ("event", "event")):
+            value = raw_run.get(source_key)
+            if value:
+                query_hint[target_key] = value
+        return query_hint
+
+    @staticmethod
+    def _idempotency_payload(payload: dict[str, Any], *, redact_keys: set[str]) -> dict[str, Any]:
+        clean = dict(payload)
+        for key in redact_keys:
+            if key in clean and clean[key] is not None:
+                clean[f"{key}_sha256"] = canonical_hash(clean[key])
+                clean[key] = "<redacted>"
+        return clean
+
     @staticmethod
     def _job_from_github(job: dict[str, Any]) -> CIJob:
         steps: list[CIStep] = []
@@ -345,3 +626,7 @@ def _artifact_path_matches(filename: str, requested: str | None) -> bool:
     if not requested:
         return True
     return filename == requested or filename.startswith(requested.rstrip("/") + "/") or fnmatch.fnmatchcase(filename, requested)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

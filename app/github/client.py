@@ -217,8 +217,20 @@ class GitHubClient:
             path = f"/repos/{owner}/{repo}/actions/runs"
         return await self._request("GET", path, params=params)
 
+    async def get_workflow(self, owner: str, repo: str, workflow_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/repos/{owner}/{repo}/actions/workflows/{self._q(workflow_id)}")
+
+    async def dispatch_workflow(self, owner: str, repo: str, workflow_id: str, *, ref: str, inputs: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"ref": ref}
+        if inputs:
+            payload["inputs"] = inputs
+        await self._request("POST", f"/repos/{owner}/{repo}/actions/workflows/{self._q(workflow_id)}/dispatches", json=payload)
+
     async def get_workflow_run(self, owner: str, repo: str, run_id: int) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}")
+
+    async def rerun_workflow_run(self, owner: str, repo: str, run_id: int, *, enable_debug_logging: bool = False) -> None:
+        await self._request("POST", f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun", json={"enable_debug_logging": enable_debug_logging})
 
     async def list_jobs_for_run(self, owner: str, repo: str, run_id: int, *, run_attempt: int | None = None) -> dict[str, Any]:
         if run_attempt:
@@ -226,6 +238,12 @@ class GitHubClient:
         else:
             path = f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs"
         return await self._request("GET", path, params={"per_page": 100})
+
+    async def get_workflow_job(self, owner: str, repo: str, job_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/repos/{owner}/{repo}/actions/jobs/{job_id}")
+
+    async def rerun_workflow_job(self, owner: str, repo: str, job_id: int, *, enable_debug_logging: bool = False) -> None:
+        await self._request("POST", f"/repos/{owner}/{repo}/actions/jobs/{job_id}/rerun", json={"enable_debug_logging": enable_debug_logging})
 
     async def download_job_logs(self, owner: str, repo: str, job_id: int) -> str:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs", follow_redirects=True, raw_text=True)
@@ -238,3 +256,9 @@ class GitHubClient:
 
     async def download_artifact(self, owner: str, repo: str, artifact_id: int) -> bytes:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip", follow_redirects=True, raw_bytes=True)
+
+    async def list_actions_caches(self, owner: str, repo: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._request("GET", f"/repos/{owner}/{repo}/actions/caches", params=params)
+
+    async def delete_actions_cache(self, owner: str, repo: str, cache_id: int) -> None:
+        await self._request("DELETE", f"/repos/{owner}/{repo}/actions/caches/{cache_id}")

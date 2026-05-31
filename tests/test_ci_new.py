@@ -4,8 +4,12 @@ import asyncio
 import io
 import zipfile
 
+import pytest
+
 from app.config.settings import Settings
+from app.errors import ApiError, ErrorCode
 from app.models.ci import (
+    DeleteCacheRequest,
     DispatchWorkflowRequest,
     GetCiJobRequest,
     GetCiJobsRequest,
@@ -13,9 +17,9 @@ from app.models.ci import (
     GetJobLogRequest,
     GetRunLogRequest,
     ListArtifactsRequest,
+    ListCachesRequest,
     ReadArtifactTextRequest,
-    RerunFailedJobsRequest,
-    RerunJobRequest,
+    RerunWorkflowJobRequest,
     RerunWorkflowRunRequest,
 )
 from app.policy.rules import Policy
@@ -33,11 +37,14 @@ def make_zip(files: dict[str, str]) -> bytes:
 class CIGitHubStub:
     def __init__(self) -> None:
         self.dispatched: tuple[str, str, dict] | None = None
-        self.rerun_runs: list[int] = []
-        self.rerun_failed: list[int] = []
-        self.rerun_jobs: list[int] = []
+        self.rerun_runs: list[tuple[int, bool]] = []
+        self.rerun_jobs: list[tuple[int, bool]] = []
+        self.deleted_caches: list[int] = []
         self.run_zip = make_zip({"job1/1_build.txt": "build ok\nwarning\n", "job2/test.log": "tests passed\n"})
         self.artifact_zip = make_zip({"junit.xml": "<testsuite tests='1'/>\n", "image.png": "not really png"})
+
+    async def get_workflow(self, owner: str, repo: str, workflow_id: str) -> dict:
+        return {"id": workflow_id, "path": f".github/workflows/{workflow_id}", "state": "active"}
 
     async def get_workflow_run(self, owner: str, repo: str, run_id: int) -> dict:
         return {
@@ -91,16 +98,13 @@ class CIGitHubStub:
     async def dispatch_workflow(self, owner: str, repo: str, workflow_id: str, *, ref: str, inputs: dict | None = None) -> None:
         self.dispatched = (workflow_id, ref, inputs or {})
 
-    async def rerun_workflow_run(self, owner: str, repo: str, run_id: int) -> None:
-        self.rerun_runs.append(run_id)
+    async def rerun_workflow_run(self, owner: str, repo: str, run_id: int, *, enable_debug_logging: bool = False) -> None:
+        self.rerun_runs.append((run_id, enable_debug_logging))
 
-    async def rerun_failed_jobs(self, owner: str, repo: str, run_id: int) -> None:
-        self.rerun_failed.append(run_id)
+    async def rerun_workflow_job(self, owner: str, repo: str, job_id: int, *, enable_debug_logging: bool = False) -> None:
+        self.rerun_jobs.append((job_id, enable_debug_logging))
 
-    async def rerun_job(self, owner: str, repo: str, job_id: int) -> None:
-        self.rerun_jobs.append(job_id)
-
-    async def list_artifacts_for_run(self, owner: str, repo: str, run_id: int) -> dict:
+    async def list_artifacts_for_run(self, owner: str, repo: str, run_id: int, *, per_page: int = 100) -> dict:
         return {
             "artifacts": [
                 {
@@ -118,9 +122,29 @@ class CIGitHubStub:
     async def download_artifact(self, owner: str, repo: str, artifact_id: int) -> bytes:
         return self.artifact_zip
 
+    async def list_actions_caches(self, owner: str, repo: str, *, params: dict | None = None) -> dict:
+        key = (params or {}).get("key")
+        caches = [
+            {
+                "id": 101,
+                "key": "ce-lib-windows-x64",
+                "ref": "refs/heads/gpt/fix",
+                "version": "v1",
+                "size_in_bytes": 456,
+                "created_at": "2026-05-29T00:00:00Z",
+                "last_accessed_at": "2026-05-30T00:00:00Z",
+            }
+        ]
+        if key:
+            caches = [item for item in caches if item["key"].startswith(key)]
+        return {"total_count": len(caches), "actions_caches": caches}
+
+    async def delete_actions_cache(self, owner: str, repo: str, cache_id: int) -> None:
+        self.deleted_caches.append(cache_id)
+
 
 def make_service(github: CIGitHubStub) -> CIService:
-    settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo", allow_rerun_ci=True, max_log_lines=10)
+    settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo", max_log_lines=10)
     return CIService(github, Policy(settings), settings)
 
 
@@ -141,24 +165,39 @@ def test_ci_run_jobs_job_and_logs() -> None:
     assert run_log.entries[0].name == "job1/1_build.txt"
 
 
-def test_ci_dispatch_rerun_and_artifacts() -> None:
+def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     github = CIGitHubStub()
     service = make_service(github)
 
     dispatch = asyncio.run(
-        service.dispatch_workflow("acme", "demo", DispatchWorkflowRequest(workflow_id="ci.yml", ref="main", inputs={"suite": "unit"}))
+        service.dispatch_workflow("acme", "demo", DispatchWorkflowRequest(workflow_id="ci.yml", ref="gpt/fix", inputs={"suite": "unit"}))
     )
-    rerun = asyncio.run(service.rerun_workflow_run("acme", "demo", RerunWorkflowRunRequest(run_id=77)))
-    failed = asyncio.run(service.rerun_failed_jobs("acme", "demo", RerunFailedJobsRequest(run_id=77)))
-    job = asyncio.run(service.rerun_job("acme", "demo", RerunJobRequest(job_id=10)))
+    rerun = asyncio.run(service.rerun_workflow_run("acme", "demo", RerunWorkflowRunRequest(run_id=77, enable_debug_logging=True)))
+    job = asyncio.run(service.rerun_workflow_job("acme", "demo", RerunWorkflowJobRequest(job_id=10)))
     artifacts = asyncio.run(service.list_artifacts("acme", "demo", ListArtifactsRequest(run_id=77)))
     artifact_text = asyncio.run(service.read_artifact_text("acme", "demo", ReadArtifactTextRequest(artifact_id=55)))
+    caches = asyncio.run(service.list_caches("acme", "demo", ListCachesRequest(key="ce-lib-")))
+    dry_run = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101, dry_run=True)))
+    delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix")))
 
     assert dispatch.accepted is True
-    assert github.dispatched == ("ci.yml", "main", {"suite": "unit"})
-    assert rerun.accepted is True and github.rerun_runs == [77]
-    assert failed.accepted is True and github.rerun_failed == [77]
-    assert job.accepted is True and github.rerun_jobs == [10]
+    assert dispatch.event == "workflow_dispatch"
+    assert dispatch.query_hint["event"] == "workflow_dispatch"
+    assert github.dispatched == ("ci.yml", "gpt/fix", {"suite": "unit"})
+    assert rerun.accepted is True and github.rerun_runs == [(77, True)]
+    assert job.accepted is True and github.rerun_jobs == [(10, False)]
     assert artifacts.artifacts[0].name == "reports"
     assert artifact_text.entries[0].name == "junit.xml"
     assert "testsuite" in artifact_text.entries[0].content
+    assert caches.caches[0].key == "ce-lib-windows-x64"
+    assert dry_run.deleted is False and dry_run.matched_count == 1
+    assert delete.deleted is True and github.deleted_caches == [101]
+
+
+def test_delete_cache_rejects_short_or_broad_keys() -> None:
+    service = make_service(CIGitHubStub())
+
+    with pytest.raises(ApiError) as exc:
+        asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="c")))
+
+    assert exc.value.error_code == ErrorCode.VALIDATION_ERROR

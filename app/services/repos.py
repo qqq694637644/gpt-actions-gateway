@@ -131,7 +131,7 @@ class RepoService:
             warning_parts.append("include_patterns/exclude_patterns are reflected in metadata only; GitHub archive bytes contain the full repository snapshot.")
         if request.include_archive_base64:
             data = await self.github.download_archive(owner, repo, request.ref, archive_format=request.archive_format)
-            max_bytes = request.max_bytes or self.settings.max_snapshot_bytes
+            max_bytes = request.max_bytes or self.settings.max_blob_read_bytes
             if len(data) > max_bytes:
                 raise ApiError(
                     ErrorCode.TOTAL_SIZE_TOO_LARGE,
@@ -176,7 +176,7 @@ class RepoService:
             if extensions and PurePosixPath(path).suffix.lower() not in extensions:
                 continue
             size = int(entry.get("size") or 0)
-            if size > min(self.settings.max_blob_read_bytes, self.settings.max_search_file_bytes):
+            if size > self.settings.max_blob_read_bytes:
                 continue
             if self.policy.has_binary_extension(path):
                 continue

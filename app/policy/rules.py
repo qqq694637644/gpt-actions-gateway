@@ -152,6 +152,15 @@ class Policy:
     def assert_workspace_path_allowed(self, path: str) -> str:
         return normalize_path(path)
 
+    def assert_tree_path_allowed(self, path: str | None) -> str | None:
+        if path is None or not path.strip():
+            return None
+        return normalize_path(path)
+
+    def is_excluded_tree_entry(self, path: str) -> bool:
+        parts = PurePosixPath(path.replace("\\", "/")).parts
+        return any(part in self.settings.excluded_dir_names for part in parts)
+
     def assert_write_path_allowed(self, path: str, *, operation: str = "upsert") -> str:
         normalized = normalize_path(path)
         if normalized == ".":
