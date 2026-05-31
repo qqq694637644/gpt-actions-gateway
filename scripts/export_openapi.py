@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+OPENAPI_SERVER_URL = "https://estranged-evergreen-hatchet.ngrok-free.dev/github"
+
 PUBLIC_OPERATION_IDS = {
     "prepareWorkspace",
     "prepareWorkspaceMirror",
@@ -59,6 +61,7 @@ def main() -> None:
     from app.main import app
 
     schema = app.openapi()
+    schema["servers"] = [{"url": OPENAPI_SERVER_URL}]
     validate_public_operations(schema)
     out = ROOT / "openapi.json"
     out.write_text(json.dumps(schema, indent=2, ensure_ascii=False), encoding="utf-8")
