@@ -34,8 +34,6 @@ from app.models.ci import (
     ReadArtifactTextRequest,
     ReadArtifactTextResponse,
     RepoDebugPingResponse,
-    RerunCIRequest,
-    RerunCIResponse,
     RerunFailedJobsRequest,
     RerunJobRequest,
     RerunWorkflowRunRequest,
@@ -471,11 +469,6 @@ async def rerun_failed_jobs(owner: str, repo: str, request: RerunFailedJobsReque
 @router.post("/ci/jobs/rerun", operation_id="rerunJob", summary="Rerun a workflow job", response_model=CIActionAcceptedResponse)
 async def rerun_job(owner: str, repo: str, request: RerunJobRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> CIActionAcceptedResponse:
     return await CIService(github, pol, settings).rerun_job(owner, repo, request)
-
-
-@router.post("/ci/rerun-failed", operation_id="rerunFailedCi", summary="Legacy alias: rerun failed CI jobs", response_model=RerunCIResponse)
-async def rerun_failed_ci(owner: str, repo: str, request: RerunCIRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> RerunCIResponse:
-    return await CIService(github, pol, settings).rerun_failed_ci(owner, repo, request)
 
 
 @router.post("/ci/artifacts/list", operation_id="listArtifacts", summary="List workflow run artifacts", response_model=ListArtifactsResponse)

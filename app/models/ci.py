@@ -296,13 +296,3 @@ class ReadArtifactTextResponse(GatewayBaseModel):
     entries: list[ArtifactTextFile]
     total_files: int
     truncated: bool = False
-
-
-class RerunCIRequest(GatewayBaseModel):
-    run_id: int
-
-
-class RerunCIResponse(GatewayBaseModel):
-    run_id: int
-    accepted: bool
-    message: str

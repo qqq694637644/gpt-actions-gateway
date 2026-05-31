@@ -35,8 +35,6 @@ from app.models.ci import (
     ListArtifactsResponse,
     ReadArtifactTextRequest,
     ReadArtifactTextResponse,
-    RerunCIRequest,
-    RerunCIResponse,
     RerunFailedJobsRequest,
     RerunJobRequest,
     RerunWorkflowRunRequest,
@@ -342,10 +340,6 @@ class CIService:
             self.policy.assert_write_branch_allowed(run.get("head_branch") or "")
         await self.github.rerun_job(owner, repo, request.job_id)
         return CIActionAcceptedResponse(accepted=True, message="GitHub accepted job rerun request.", job_id=request.job_id, run_id=run_id or None)
-
-    async def rerun_failed_ci(self, owner: str, repo: str, request: RerunCIRequest) -> RerunCIResponse:
-        response = await self.rerun_failed_jobs(owner, repo, RerunFailedJobsRequest(run_id=request.run_id))
-        return RerunCIResponse(run_id=request.run_id, accepted=response.accepted, message=response.message)
 
     async def _assert_rerun_run_allowed(self, owner: str, repo: str, run_id: int) -> None:
         self.policy.assert_repo_allowed(owner, repo)

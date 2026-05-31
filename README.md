@@ -22,7 +22,17 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 | POST | `/repos/{owner}/{repo}/pulls/merge` | `mergePullRequest` | 默认关闭；开启后仅允许 merge `gpt/*` 头分支且目标分支在白名单中的 PR |
 | POST | `/repos/{owner}/{repo}/ci/status/query` | `queryCiStatus` | 通过 JSON body 按 commit / PR / branch 查询并整理 GitHub Actions 状态 |
 | POST | `/repos/{owner}/{repo}/ci/failed-log/query` | `queryFailedCiLog` | 通过 JSON body 下载失败 job 日志并提取关键片段 |
-| POST | `/repos/{owner}/{repo}/ci/rerun-failed` | `rerunFailedCi` | 默认关闭；开启后仅允许 rerun `gpt/*` 分支的 failed jobs |
+| POST | `/repos/{owner}/{repo}/ci/runs/get` | `getCiRun` | 获取单个 workflow run；可选附带 jobs |
+| POST | `/repos/{owner}/{repo}/ci/jobs/list` | `getCiJobs` | 列出某个 workflow run 的 jobs |
+| POST | `/repos/{owner}/{repo}/ci/jobs/get` | `getCiJob` | 获取单个 workflow job |
+| POST | `/repos/{owner}/{repo}/ci/jobs/log` | `getJobLog` | 读取单个 job 日志；可按 step 名称裁剪 |
+| POST | `/repos/{owner}/{repo}/ci/runs/log` | `getRunLog` | 读取 workflow run 的日志归档文本文件 |
+| POST | `/repos/{owner}/{repo}/ci/workflows/dispatch` | `dispatchWorkflow` | 默认关闭；触发 workflow_dispatch 工作流 |
+| POST | `/repos/{owner}/{repo}/ci/runs/rerun` | `rerunWorkflowRun` | 默认关闭；重新运行整个 workflow run |
+| POST | `/repos/{owner}/{repo}/ci/runs/rerun-failed` | `rerunFailedJobs` | 默认关闭；仅重新运行失败 jobs |
+| POST | `/repos/{owner}/{repo}/ci/jobs/rerun` | `rerunJob` | 默认关闭；重新运行单个 job |
+| POST | `/repos/{owner}/{repo}/ci/artifacts/list` | `listArtifacts` | 列出 workflow run 产物 |
+| POST | `/repos/{owner}/{repo}/ci/artifacts/read-text` | `readArtifactText` | 从 artifact zip 中读取文本文件 |
 
 ## 主要安全设计
 
