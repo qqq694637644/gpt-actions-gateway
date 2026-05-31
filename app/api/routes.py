@@ -173,7 +173,7 @@ async def list_tree(
     return await FileService(github, pol, settings).list_tree(owner, repo, ref=ref, path=path, extensions=extensions, max_results=max_results)
 
 
-@router.post("/files/read", operation_id="getFile", summary="Read a single text file", response_model=FileContentResponse)
+@router.post("/files/read", operation_id="getFile", summary="Read a single text file", response_model=FileContentResponse, include_in_schema=False)
 async def get_file(
     owner: str,
     repo: str,
@@ -185,7 +185,7 @@ async def get_file(
     return await FileService(github, pol, settings).read_file(owner, repo, request)
 
 
-@router.post("/files/read-range", operation_id="getFileRange", summary="Read a specific line range from a text file", response_model=FileRangeResponse)
+@router.post("/files/read-range", operation_id="getFileRange", summary="Read a specific line range from a text file", response_model=FileRangeResponse, include_in_schema=False)
 async def get_file_range(
     owner: str,
     repo: str,
@@ -197,7 +197,7 @@ async def get_file_range(
     return await FileService(github, pol, settings).read_file_range(owner, repo, request)
 
 
-@router.post("/files/read-many", operation_id="getFiles", summary="Read multiple related text files", response_model=ReadFilesResponse)
+@router.post("/files/read-many", operation_id="getFiles", summary="Read multiple related text files", response_model=ReadFilesResponse, include_in_schema=False)
 async def get_files(
     owner: str,
     repo: str,
@@ -209,7 +209,7 @@ async def get_files(
     return await FileService(github, pol, settings).read_files(owner, repo, request)
 
 
-@router.post("/code/search", operation_id="searchCode", summary="Search text code at a ref", response_model=SearchCodeResponse)
+@router.post("/code/search", operation_id="searchCode", summary="Search text code at a ref", response_model=SearchCodeResponse, include_in_schema=False)
 async def search_code(
     owner: str,
     repo: str,
@@ -284,7 +284,7 @@ async def get_branch(
     return await RepoService(github, pol, settings).get_branch(owner, repo, request)
 
 
-@router.post("/branches/protection/get", operation_id="getBranchProtection", summary="Get branch protection", response_model=GetBranchProtectionResponse)
+@router.post("/branches/protection/get", operation_id="getBranchProtection", summary="Get branch protection", response_model=GetBranchProtectionResponse, include_in_schema=False)
 async def get_branch_protection(
     owner: str,
     repo: str,
@@ -297,7 +297,7 @@ async def get_branch_protection(
 
 
 # Commit / compare APIs
-@router.post("/commits/commit-files", operation_id="commitFiles", summary="Commit multiple text file changes to a gpt/* branch", response_model=CommitFilesResponse)
+@router.post("/commits/commit-files", operation_id="commitFiles", summary="Commit multiple text file changes to a gpt/* branch", response_model=CommitFilesResponse, include_in_schema=False)
 async def commit_files(
     owner: str,
     repo: str,
@@ -366,12 +366,12 @@ async def comment_pull_request(owner: str, repo: str, request: CommentPullReques
     return await PullRequestService(github, pol).comment_pull_request(owner, repo, request)
 
 
-@router.post("/pulls/request-reviewers", operation_id="requestReviewers", summary="Request reviewers for a GPT pull request", response_model=RequestReviewersResponse)
+@router.post("/pulls/request-reviewers", operation_id="requestReviewers", summary="Request reviewers for a GPT pull request", response_model=RequestReviewersResponse, include_in_schema=False)
 async def request_reviewers(owner: str, repo: str, request: RequestReviewersRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> RequestReviewersResponse:
     return await PullRequestService(github, pol).request_reviewers(owner, repo, request)
 
 
-@router.post("/issues/labels/add", operation_id="addLabels", summary="Add labels to a pull request issue", response_model=AddLabelsResponse)
+@router.post("/issues/labels/add", operation_id="addLabels", summary="Add labels to a pull request issue", response_model=AddLabelsResponse, include_in_schema=False)
 async def add_labels(owner: str, repo: str, request: AddLabelsRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> AddLabelsResponse:
     return await PullRequestService(github, pol).add_labels(owner, repo, request)
 

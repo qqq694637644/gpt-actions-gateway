@@ -13,17 +13,11 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 | 方法 | 路径 | operationId | 说明 |
 |---|---|---|---|
 | GET | `/repos/{owner}/{repo}/tree` | `listTree` | 列出目录树 / 按路径和扩展名筛选候选文件 |
-| POST | `/repos/{owner}/{repo}/files/read` | `getFile` | 读取单个文件，超限截断，二进制不返回正文 |
-| POST | `/repos/{owner}/{repo}/files/read-range` | `getFileRange` | 读取指定行范围 |
-| POST | `/repos/{owner}/{repo}/files/read-many` | `getFiles` | 一次读取多个文件，限制总大小 |
-| POST | `/repos/{owner}/{repo}/code/search` | `searchCode` | 在指定 ref 上按文本搜索代码 |
 | POST | `/repos/{owner}/{repo}/snapshots/export` | `exportRepoSnapshot` | 导出仓库快照元数据，可选附带 base64 压缩包 |
 | POST | `/repos/{owner}/{repo}/branches/create-work-branch` | `createWorkBranch` | 从 `base_ref` / `base_sha` / `source_pr_number` 创建或继续 `gpt/*` 工作分支 |
 | POST | `/repos/{owner}/{repo}/branches/continue-work-branch` | `continueWorkBranch` | 继续一个已存在的 `gpt/*` 工作分支 |
 | POST | `/repos/{owner}/{repo}/branches/list` | `listBranches` | 列出仓库分支 |
 | POST | `/repos/{owner}/{repo}/branches/get` | `getBranch` | 获取单个分支详情 |
-| POST | `/repos/{owner}/{repo}/branches/protection/get` | `getBranchProtection` | 获取分支保护信息 |
-| POST | `/repos/{owner}/{repo}/commits/commit-files` | `commitFiles` | Git Database API 多文件提交，要求 `expected_head_sha`，`force=false` |
 | POST | `/repos/{owner}/{repo}/commits/apply-patch` | `applyPatchAndCommit` | 应用 `git diff / unified diff` 并提交，支持文本 patch、mode change、GIT binary patch |
 | POST | `/repos/{owner}/{repo}/compare` | `compareRefs` | 比较两个 ref 的差异 |
 | POST | `/repos/{owner}/{repo}/pulls/create` | `createPullRequest` | 创建 PR；若同 head/base 已有 open PR，则返回已有 PR |
@@ -32,8 +26,6 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 | POST | `/repos/{owner}/{repo}/pulls/files` | `getPullRequestFiles` | 列出 PR 变更文件 |
 | POST | `/repos/{owner}/{repo}/pulls/update` | `updatePullRequest` | 更新 PR 标题、正文、状态或 base 分支 |
 | POST | `/repos/{owner}/{repo}/pulls/comment` | `commentPullRequest` | 给 PR 发表评论 |
-| POST | `/repos/{owner}/{repo}/pulls/request-reviewers` | `requestReviewers` | 请求 reviewer |
-| POST | `/repos/{owner}/{repo}/issues/labels/add` | `addLabels` | 给 PR 对应 issue 添加标签 |
 | POST | `/repos/{owner}/{repo}/pulls/merge` | `mergePullRequest` | 默认关闭；开启后仅允许 merge `gpt/*` 头分支且目标分支在白名单中的 PR |
 | POST | `/repos/{owner}/{repo}/metadata/get` | `getRepository` | 获取仓库元数据 |
 | POST | `/repos/{owner}/{repo}/metadata/default-branch` | `getDefaultBranch` | 获取默认分支 |
@@ -56,14 +48,16 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 - GPT 只拿到网关的 Bearer token，不接触 GitHub token。
 - 默认要求仓库在 `ALLOWED_REPOS` 中；设置 `ALLOW_ALL_REPOS=true` 可取消这个限制。
 - 写入分支必须以 `WRITE_BRANCH_PREFIX` 开头，默认 `gpt/`。
-- `commitFiles` 必须带 `expected_head_sha`；提交前检查分支 head，更新 ref 时 `force=false`。
-- 支持 `previous_sha`，可对单文件做更细粒度的并发保护。
+- 公开 schema 默认使用 `applyPatchAndCommit` 提交修改；它必须带 `expected_head_sha`，提交前检查分支 head，更新 ref 时 `force=false`。
+- 隐藏的 `commitFiles` 仍支持 `previous_sha`，可对单文件做更细粒度的并发保护。
 - `applyPatchAndCommit` 支持 `modified`、`added`、`deleted`、`renamed`，并支持 blob 文件的 mode change 与 `GIT binary patch`。
 - 默认禁止删除文件、修改 `.github/workflows/*`、写入密钥类文件、写入二进制/压缩/构建产物。
 - CI 查询优先按 `commit_sha`/PR head SHA 精确匹配；branch 查询会先解析当前 head SHA，避免拿到旧 run。
 - CI rerun 默认关闭；开启后还要求 GitHub token 有 Actions: Write。
 - 自动 merge 默认关闭；开启后仅允许 merge `gpt/*` 分支发起的 PR。
 - SQLite 记录审计事件和幂等响应，避免 GPT Action 重试造成重复分支/提交。
+
+以下后端接口默认仍可用，但不会出现在导出的 GPT Actions OpenAPI 中，避免超过 30 个操作上限并减少模型误选工具：`getFile`、`getFileRange`、`getFiles`、`commitFiles`、`searchCode`、`requestReviewers`、`addLabels`、`getBranchProtection`。
 
 ## 快速启动
 
@@ -155,14 +149,14 @@ Workflows: Write
 
 ## 典型调用流程
 
-1. `listTree` 定位文件。
-2. `getFile` / `getFiles` / `getFileRange` 读取上下文。
-3. `createWorkBranch` 创建 `gpt/*` 分支。
-4. `commitFiles` 提交修改，传入 `expected_head_sha` 和可选 `previous_sha`。
+1. `listTree` 初步判断仓库结构。
+2. `exportRepoSnapshot` 导出仓库快照，在本地分析并生成 patch。
+3. `createWorkBranch` 创建或继续 `gpt/*` 分支。
+4. `applyPatchAndCommit` 提交 patch，传入 `expected_head_sha`。
 5. `createPullRequest` 创建 PR。
 6. `queryCiStatus` 用 commit SHA / PR 查询 CI。
-7. 失败时调用 `queryFailedCiLog`。
-8. 根据日志再次读取文件并 `commitFiles`。
+7. 失败时调用 `queryFailedCiLog`，必要时继续用 `getCiRun` / `getCiJobs` / `getJobLog` / `getRunLog` 下钻。
+8. 根据日志修复后再次 `applyPatchAndCommit`。
 9. 如需自动 merge，先设置 `ALLOW_AUTO_MERGE=true`，再调用 `mergePullRequest`。
 
 ## 示例请求
@@ -270,6 +264,6 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/merge" \
 ## 注意事项
 
 - 这个网关是同步 HTTP API，不实现长期后台任务。
-- `getFileRange` 需要先读取 blob，因此仍受 `MAX_BLOB_READ_BYTES` 限制。
-- `CommitFilesResponse.changed_files[].new_sha` 当前不额外查询新 blob SHA，避免多一次 tree 查询；commit SHA 和分支 head 已准确返回。
+- `getFileRange` 默认不暴露在 GPT Actions OpenAPI 中；后端接口仍可用，且读取 blob 时仍受 `MAX_BLOB_READ_BYTES` 限制。
+- `CommitFilesResponse.changed_files[].new_sha` 当前不额外查询新 blob SHA，避免多一次 tree 查询；该兼容接口默认不暴露在 GPT Actions OpenAPI 中。
 - GitHub App 模式已实现 installation token 获取；生产使用前建议加更完整的安装权限巡检和多 installation 映射。
