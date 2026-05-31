@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     workspace_max_timeout_seconds: int = 300
     workspace_max_output_bytes: int = Field(default=80_000)
     workspace_max_diff_bytes: int = Field(default=200_000)
+    workspace_max_patch_bytes: int = Field(default=200_000)
+    workspace_max_write_bytes: int = Field(default=200_000)
     workspace_max_changed_files: int = 200
     workspace_ttl_hours: int = 24
     workspace_max_count: int = 50
@@ -97,6 +99,8 @@ class Settings(BaseSettings):
         "max_blob_read_bytes",
         "workspace_max_output_bytes",
         "workspace_max_diff_bytes",
+        "workspace_max_patch_bytes",
+        "workspace_max_write_bytes",
         mode="before",
     )
     @classmethod

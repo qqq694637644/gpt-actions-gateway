@@ -78,6 +78,45 @@ class WorkspaceDiffResponse(GatewayBaseModel):
     truncated: bool
 
 
+class WorkspaceApplyPatchRequest(GatewayBaseModel):
+    patch: str = Field(min_length=1)
+    dry_run: bool = False
+    allow_delete: bool = False
+    max_changed_files: int | None = Field(default=None, ge=1)
+    max_patch_bytes: int | None = Field(default=None, ge=1)
+
+
+class WorkspaceApplyPatchResponse(GatewayBaseModel):
+    applied: bool
+    dry_run: bool
+    changed_files: list[ChangedFile]
+    diff_stat: str
+    truncated: bool = False
+
+
+class WorkspaceWriteFileRequest(GatewayBaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    content: str
+    mode: Literal["create_only", "overwrite", "overwrite_if_sha256_matches"] = "create_only"
+    encoding: Literal["utf-8"] = "utf-8"
+    line_ending: Literal["preserve", "lf", "crlf"] = "preserve"
+    expected_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    dry_run: bool = False
+    max_bytes: int | None = Field(default=None, ge=1)
+
+
+class WorkspaceWriteFileResponse(GatewayBaseModel):
+    written: bool
+    dry_run: bool
+    path: str
+    operation: Literal["added", "modified", "unchanged"] | str
+    previous_sha256: str | None
+    new_sha256: str
+    bytes: int
+    changed_files: list[ChangedFile]
+    diff_stat: str
+
+
 class WorkspaceCommitAndPushRequest(IdempotentRequest):
     branch: str
     expected_head_sha: str = Field(min_length=7)

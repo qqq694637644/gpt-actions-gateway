@@ -290,6 +290,30 @@ class WorkspaceManager:
         stats = await self.diff_numstat(repo_dir, staged=True)
         return attach_numstat(changed, stats)
 
+    async def changed_files_for_paths(self, repo_dir: Path, paths: list[str]) -> list[ChangedFile]:
+        selectors = normalize_git_paths(paths)
+        changed, _, _ = await self.changed_files(repo_dir)
+        selected: list[ChangedFile] = []
+        for item in changed:
+            if _path_is_selected(item.path, selectors):
+                operation = "added" if item.operation == "untracked" else item.operation
+                selected.append(item.model_copy(update={"operation": operation}))
+        return selected
+
+    async def diff_stat_for_paths(self, repo_dir: Path, paths: list[str]) -> str:
+        selectors = normalize_git_paths(paths)
+        result = await self.git.run(["git", "diff", "--stat", "--", *selectors], cwd=repo_dir, check=False, allowed_exit_codes=(0, 1), max_output_bytes=20_000)
+        chunks: list[str] = [result.stdout.strip()] if result.stdout.strip() else []
+        for path in (await self.untracked_files(repo_dir))[: self.settings.workspace_max_changed_files]:
+            if not _path_is_selected(path, selectors):
+                continue
+            file_path = repo_dir / path
+            if file_path.is_file():
+                no_index = await self.git.run(["git", "diff", "--no-index", "--stat", "--", os.devnull, path], cwd=repo_dir, check=False, allowed_exit_codes=(0, 1), max_output_bytes=20_000)
+                if no_index.stdout.strip():
+                    chunks.append(no_index.stdout.strip())
+        return "\n".join(chunks)
+
     async def ahead_behind(self, repo_dir: Path, branch: str) -> tuple[int, int]:
         if is_sha(branch):
             return 0, 0

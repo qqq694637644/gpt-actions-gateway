@@ -12,6 +12,8 @@ PUBLIC_OPERATION_IDS = {
     "workspaceExecPwsh",
     "workspaceStatus",
     "workspaceDiff",
+    "workspaceApplyPatch",
+    "workspaceWriteFile",
     "workspaceCommitAndPush",
     "workspaceReset",
     "createWorkBranch",

@@ -18,6 +18,8 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 - `workspaceExecPwsh`
 - `workspaceStatus`
 - `workspaceDiff`
+- `workspaceApplyPatch`
+- `workspaceWriteFile`
 - `workspaceCommitAndPush`
 - `workspaceReset`
 
@@ -69,6 +71,8 @@ WORKSPACE_DEFAULT_TIMEOUT_SECONDS=60
 WORKSPACE_MAX_TIMEOUT_SECONDS=300
 WORKSPACE_MAX_OUTPUT_BYTES=80000
 WORKSPACE_MAX_DIFF_BYTES=200000
+WORKSPACE_MAX_PATCH_BYTES=200000
+WORKSPACE_MAX_WRITE_BYTES=200000
 WORKSPACE_MAX_CHANGED_FILES=200
 WORKSPACE_ALLOW_NETWORK=false
 WORKSPACE_GIT_USER_NAME=gpt-actions-gateway
@@ -118,6 +122,36 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/exec-pwsh" \
 ```
 
 `workspaceExecPwsh` always runs from the repository root. It does not receive GitHub credentials and cannot publish code directly.
+
+For small auditable edits, use `workspaceApplyPatch` instead of running ad-hoc file mutation scripts:
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/apply-patch" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "patch": "*** Begin Patch\n*** Update File: README.md\n@@\n-before\n+after\n*** End Patch\n",
+    "dry_run": false,
+    "allow_delete": false
+  }'
+```
+
+For a single generated UTF-8 text file, use `workspaceWriteFile`:
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/write-file" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "path": "docs/ci.md",
+    "content": "# CI\n",
+    "mode": "create_only",
+    "line_ending": "lf",
+    "dry_run": false
+  }'
+```
+
+Both endpoints only modify the local workspace. They never commit, push, create PRs, or trigger CI.
 
 ### 4. Review current state
 
@@ -183,6 +217,7 @@ When CI fails, call `queryFailedCiLog`, then drill into job logs, run logs, or t
 - Writes are limited to `gpt/*` branches.
 - The gateway refuses sensitive paths such as `.env*`, certificates, credential directories, dependency directories, generated directories, and `.git` internals.
 - Workflow files are blocked unless `ALLOW_WORKFLOW_EDIT=true`.
+- `workspaceApplyPatch` and `workspaceWriteFile` reject absolute paths, `..` traversal, `.git` internals, sensitive paths, binary content, oversized payloads, and deletes unless explicitly allowed by request and backend policy.
 - `workspaceExecPwsh` blocks direct publish commands, GitHub CLI authentication, secret operations, host environment enumeration, SSH/SCP, and network commands unless server policy allows network access.
 - GitHub credentials are used only by internal gateway operations.
 - Workspace operations are recorded in the audit database.

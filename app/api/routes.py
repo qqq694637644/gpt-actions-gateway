@@ -45,6 +45,8 @@ from app.models.pulls import (
 from app.models.workspaces import (
     PrepareWorkspaceRequest,
     PrepareWorkspaceResponse,
+    WorkspaceApplyPatchRequest,
+    WorkspaceApplyPatchResponse,
     WorkspaceCommitAndPushRequest,
     WorkspaceCommitAndPushResponse,
     WorkspaceDiffRequest,
@@ -55,6 +57,8 @@ from app.models.workspaces import (
     WorkspaceResetResponse,
     WorkspaceStatusRequest,
     WorkspaceStatusResponse,
+    WorkspaceWriteFileRequest,
+    WorkspaceWriteFileResponse,
 )
 from app.policy.rules import Policy
 from app.services.branches import BranchService
@@ -143,6 +147,36 @@ async def workspace_diff(
     audit: Annotated[AuditStore, Depends(audit_store)],
 ) -> WorkspaceDiffResponse:
     return await WorkspaceService(github, pol, settings, manager, audit).diff(owner, repo, workspace_id, request)
+
+
+@router.post("/workspaces/{workspace_id}/apply-patch", operation_id="workspaceApplyPatch", summary="Apply a controlled text patch inside a workspace", response_model=WorkspaceApplyPatchResponse)
+async def workspace_apply_patch(
+    owner: str,
+    repo: str,
+    workspace_id: str,
+    request: WorkspaceApplyPatchRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> WorkspaceApplyPatchResponse:
+    return await WorkspaceService(github, pol, settings, manager, audit).apply_patch(owner, repo, workspace_id, request)
+
+
+@router.post("/workspaces/{workspace_id}/write-file", operation_id="workspaceWriteFile", summary="Write one UTF-8 text file inside a workspace", response_model=WorkspaceWriteFileResponse)
+async def workspace_write_file(
+    owner: str,
+    repo: str,
+    workspace_id: str,
+    request: WorkspaceWriteFileRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> WorkspaceWriteFileResponse:
+    return await WorkspaceService(github, pol, settings, manager, audit).write_file(owner, repo, workspace_id, request)
 
 
 @router.post("/workspaces/{workspace_id}/commit-and-push", operation_id="workspaceCommitAndPush", summary="Commit and push workspace changes", response_model=WorkspaceCommitAndPushResponse)

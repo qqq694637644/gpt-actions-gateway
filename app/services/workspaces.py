@@ -6,6 +6,8 @@ from app.github.client import GitHubClient
 from app.models.workspaces import (
     PrepareWorkspaceRequest,
     PrepareWorkspaceResponse,
+    WorkspaceApplyPatchRequest,
+    WorkspaceApplyPatchResponse,
     WorkspaceCommitAndPushRequest,
     WorkspaceCommitAndPushResponse,
     WorkspaceDiffRequest,
@@ -16,11 +18,24 @@ from app.models.workspaces import (
     WorkspaceResetResponse,
     WorkspaceStatusRequest,
     WorkspaceStatusResponse,
+    WorkspaceWriteFileRequest,
+    WorkspaceWriteFileResponse,
 )
 from app.policy.rules import Policy
 from app.storage.audit import AuditStore
 from app.workspace.exec import PwshExecutor
 from app.workspace.manager import WorkspaceManager, command_hash
+from app.workspace.text_ops import (
+    apply_text_patch,
+    assert_payload_size,
+    assert_text_bytes,
+    normalize_line_endings,
+    parse_codex_patch,
+    restore_files,
+    sha256_hex,
+    snapshot_files,
+    validate_write_target,
+)
 
 
 class WorkspaceService:
@@ -138,6 +153,134 @@ class WorkspaceService:
             changed_files=[item.model_dump() for item in changed],
         )
         return WorkspaceDiffResponse(workspace_id=workspace_id, diff=diff_text, diff_stat=diff_stat, changed_files=changed, truncated=truncated)
+
+    async def apply_patch(self, owner: str, repo: str, workspace_id: str, request: WorkspaceApplyPatchRequest) -> WorkspaceApplyPatchResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        max_patch_bytes = min(request.max_patch_bytes or self.settings.workspace_max_patch_bytes, self.settings.workspace_max_patch_bytes)
+        patch_bytes = request.patch.encode("utf-8")
+        assert_payload_size(patch_bytes, max_bytes=max_patch_bytes, error_code=ErrorCode.WORKSPACE_PATCH_TOO_LARGE, label="Patch")
+        max_changed_files = min(request.max_changed_files or self.settings.workspace_max_changed_files, self.settings.workspace_max_changed_files)
+        repo_dir = self.manager.repo_dir(workspace_id)
+        with self.manager.lock(workspace_id):
+            operations = parse_codex_patch(request.patch, self.policy, repo_dir, allow_delete=request.allow_delete, max_changed_files=max_changed_files)
+            target_paths = list(dict.fromkeys(item.path for item in operations))
+            snapshots = snapshot_files(repo_dir, target_paths)
+            should_restore = True
+            try:
+                apply_text_patch(repo_dir, operations)
+                changed = await self.manager.changed_files_for_paths(repo_dir, target_paths)
+                if len(changed) > max_changed_files:
+                    raise ApiError(ErrorCode.WORKSPACE_TOO_MANY_CHANGED_FILES, "Patch changes too many files.", status_code=413, details={"count": len(changed), "max": max_changed_files})
+                await self.manager.validate_changed_paths(repo_dir, changed)
+                diff_stat = await self.manager.diff_stat_for_paths(repo_dir, target_paths)
+                response = WorkspaceApplyPatchResponse(
+                    applied=not request.dry_run,
+                    dry_run=request.dry_run,
+                    changed_files=changed,
+                    diff_stat=diff_stat,
+                    truncated=False,
+                )
+                should_restore = request.dry_run
+            except Exception:
+                restore_files(repo_dir, snapshots)
+                raise
+            finally:
+                if should_restore:
+                    restore_files(repo_dir, snapshots)
+        self._audit(
+            operation_id="workspaceApplyPatch",
+            owner=owner,
+            repo=repo,
+            workspace_id=workspace_id,
+            branch=meta.branch,
+            head_sha_before=meta.head_sha,
+            changed_files=[item.model_dump() for item in response.changed_files],
+            command_hash=command_hash(request.patch),
+        )
+        return response
+
+    async def write_file(self, owner: str, repo: str, workspace_id: str, request: WorkspaceWriteFileRequest) -> WorkspaceWriteFileResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        repo_dir = self.manager.repo_dir(workspace_id)
+        max_bytes = min(request.max_bytes or self.settings.workspace_max_write_bytes, self.settings.workspace_max_write_bytes)
+        with self.manager.lock(workspace_id):
+            path, resolved = validate_write_target(self.policy, repo_dir, request.path, operation="modified", error_code=ErrorCode.WORKSPACE_WRITE_INVALID_PATH)
+            previous_bytes: bytes | None = None
+            if resolved.exists():
+                if not resolved.is_file():
+                    raise ApiError(ErrorCode.WORKSPACE_WRITE_INVALID_PATH, "Target path exists but is not a file.", status_code=400, details={"path": path})
+                previous_bytes = resolved.read_bytes()
+                assert_text_bytes(previous_bytes, path=path)
+                previous_sha = sha256_hex(previous_bytes)
+            else:
+                previous_sha = None
+
+            if request.mode == "create_only" and previous_bytes is not None:
+                raise ApiError(ErrorCode.WORKSPACE_FILE_EXISTS, "File already exists; create_only refused to overwrite it.", status_code=409, details={"path": path})
+            if request.mode == "overwrite_if_sha256_matches":
+                if previous_bytes is None:
+                    raise ApiError(ErrorCode.WORKSPACE_FILE_NOT_FOUND, "File does not exist; cannot verify expected_sha256.", status_code=404, details={"path": path})
+                if not request.expected_sha256:
+                    raise ApiError(ErrorCode.VALIDATION_ERROR, "expected_sha256 is required for overwrite_if_sha256_matches.", status_code=422, details={"path": path})
+                if previous_sha != request.expected_sha256:
+                    raise ApiError(ErrorCode.WORKSPACE_SHA_MISMATCH, "Current file SHA-256 does not match expected_sha256.", status_code=409, details={"path": path, "expected_sha256": request.expected_sha256, "actual_sha256": previous_sha})
+
+            normalized_content = normalize_line_endings(request.content, line_ending=request.line_ending, previous_bytes=previous_bytes)
+            data = normalized_content.encode("utf-8")
+            assert_text_bytes(data, path=path)
+            assert_payload_size(data, max_bytes=max_bytes, error_code=ErrorCode.WORKSPACE_CONTENT_TOO_LARGE, label="Content")
+            new_sha = sha256_hex(data)
+            if previous_bytes is None:
+                operation = "added"
+            elif previous_bytes == data:
+                operation = "unchanged"
+            else:
+                operation = "modified"
+
+            changed = []
+            diff_stat = ""
+            if operation != "unchanged":
+                snapshots = snapshot_files(repo_dir, [path])
+                should_restore = True
+                try:
+                    resolved.parent.mkdir(parents=True, exist_ok=True)
+                    resolved.write_bytes(data)
+                    changed = await self.manager.changed_files_for_paths(repo_dir, [path])
+                    if len(changed) > 1:
+                        raise ApiError(ErrorCode.WORKSPACE_TOO_MANY_CHANGED_FILES, "write-file unexpectedly changed more than one file.", status_code=409, details={"count": len(changed)})
+                    await self.manager.validate_changed_paths(repo_dir, changed)
+                    diff_stat = await self.manager.diff_stat_for_paths(repo_dir, [path])
+                    should_restore = request.dry_run
+                except Exception as exc:
+                    restore_files(repo_dir, snapshots)
+                    if isinstance(exc, ApiError):
+                        raise
+                    raise ApiError(ErrorCode.WORKSPACE_WRITE_FAILED, "Failed to write workspace file.", status_code=500, details={"path": path, "error": str(exc)}) from exc
+                finally:
+                    if should_restore:
+                        restore_files(repo_dir, snapshots)
+            response = WorkspaceWriteFileResponse(
+                written=bool(operation != "unchanged" and not request.dry_run),
+                dry_run=request.dry_run,
+                path=path,
+                operation=operation,
+                previous_sha256=previous_sha,
+                new_sha256=new_sha,
+                bytes=len(data),
+                changed_files=changed,
+                diff_stat=diff_stat,
+            )
+        self._audit(
+            operation_id="workspaceWriteFile",
+            owner=owner,
+            repo=repo,
+            workspace_id=workspace_id,
+            branch=meta.branch,
+            head_sha_before=meta.head_sha,
+            changed_files=[item.model_dump() for item in response.changed_files],
+            command_hash=command_hash(path + "\n" + new_sha),
+        )
+        return response
 
     async def commit_and_push(self, owner: str, repo: str, workspace_id: str, request: WorkspaceCommitAndPushRequest) -> WorkspaceCommitAndPushResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)

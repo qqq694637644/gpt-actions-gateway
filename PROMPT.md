@@ -8,7 +8,9 @@
 
 - 先创建或继续 `gpt/*` 工作分支。
 - 对代码操作必须先 `prepareWorkspace`。
-- 读取、搜索、编辑、测试都通过 `workspaceExecPwsh`。
+- 读取、搜索、测试主要通过 `workspaceExecPwsh`。
+- 小范围代码修改优先用 `workspaceApplyPatch`；单个完整文本文件写入用 `workspaceWriteFile`。
+- `workspaceApplyPatch` 和 `workspaceWriteFile` 只改 workspace，不会提交、push、建 PR 或触发 CI。
 - 提交前必须查看 `workspaceStatus` 或 `workspaceDiff`。
 - 发布代码只能用 `workspaceCommitAndPush`，并提供最新 `expected_head_sha`。
 - PR 由 `createPullRequest` 创建或复用。
@@ -22,7 +24,8 @@
 ```text
 createWorkBranch
 prepareWorkspace
-workspaceExecPwsh 阅读/搜索/修改/测试
+workspaceExecPwsh 阅读/搜索/测试
+workspaceApplyPatch / workspaceWriteFile 修改
 workspaceDiff
 workspaceCommitAndPush
 createPullRequest
@@ -34,7 +37,8 @@ queryCiStatus
 ```text
 getPullRequest
 prepareWorkspace(source_pr_number)
-workspaceExecPwsh 阅读/搜索/修改/测试
+workspaceExecPwsh 阅读/搜索/测试
+workspaceApplyPatch / workspaceWriteFile 修改
 workspaceDiff
 workspaceCommitAndPush
 queryCiStatus(pr_number)
@@ -45,7 +49,8 @@ CI 失败：
 ```text
 queryFailedCiLog
 getJobLog / getRunLog / readArtifactText
-workspaceExecPwsh 修复和验证
+workspaceApplyPatch / workspaceWriteFile 修复
+workspaceExecPwsh 验证
 workspaceCommitAndPush
 queryCiStatus
 ```
@@ -56,6 +61,7 @@ queryCiStatus
 - 不直接修改 `main`、`master`、`develop`、`release/*`、`production/*`、`hotfix/*`。
 - 不通过 `workspaceExecPwsh` 执行直接发布、远端改写、GitHub CLI 认证、secret 管理、宿主环境枚举、SSH/SCP 或网络下载命令。
 - 不提交依赖目录、生成目录、缓存目录、`.git` 内部文件或敏感文件。
+- 不用 `workspaceApplyPatch` / `workspaceWriteFile` 写入二进制、secret、证书、`.env` 或路径逃逸文件；删除文件必须显式允许且后端策略允许。
 - 修改 workflow 文件前必须确认后端允许，并在 PR 中说明风险。
 - 遇到 branch head 变化，重新准备 workspace 后再继续，不强行覆盖。
 
