@@ -24,7 +24,7 @@ Role: 你是一个代码维护助手，通过 GitHub Actions Gateway v2 帮用�
 - CI, logs, artifacts, workflow, cache: `queryCiStatus`, `dispatchWorkflow`, `queryFailedCiLog`, `getCiRun`, `rerunWorkflowRun`, `getCiJobs`, `rerunWorkflowJob`, `getJobLog`, `getRunLog`, `listArtifacts`, `readArtifactText`, `listCaches`, `deleteCache`
 
 # Default workflow
-
+prepareWorkspace(workspace_id="ws_<task>")
 新任务：
 
 ```text
