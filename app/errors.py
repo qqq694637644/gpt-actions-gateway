@@ -18,11 +18,9 @@ class ErrorCode(StrEnum):
     PATH_NOT_ALLOWED = "PATH_NOT_ALLOWED"
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
     TOO_MANY_FILES = "TOO_MANY_FILES"
-    TOTAL_SIZE_TOO_LARGE = "TOTAL_SIZE_TOO_LARGE"
     BINARY_FILE_NOT_ALLOWED = "BINARY_FILE_NOT_ALLOWED"
     DELETE_NOT_ALLOWED = "DELETE_NOT_ALLOWED"
     WORKFLOW_EDIT_NOT_ALLOWED = "WORKFLOW_EDIT_NOT_ALLOWED"
-    AUTO_MERGE_NOT_ALLOWED = "AUTO_MERGE_NOT_ALLOWED"
     BRANCH_HEAD_CHANGED = "BRANCH_HEAD_CHANGED"
     PR_ALREADY_EXISTS = "PR_ALREADY_EXISTS"
     CI_RUN_NOT_FOUND = "CI_RUN_NOT_FOUND"
@@ -34,13 +32,24 @@ class ErrorCode(StrEnum):
     GITHUB_ERROR = "GITHUB_ERROR"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     IDEMPOTENCY_KEY_REUSED = "IDEMPOTENCY_KEY_REUSED"
-    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+
+    WORKSPACE_NOT_FOUND = "WORKSPACE_NOT_FOUND"
+    WORKSPACE_BUSY = "WORKSPACE_BUSY"
+    WORKSPACE_DIRTY = "WORKSPACE_DIRTY"
+    WORKSPACE_HEAD_CHANGED = "WORKSPACE_HEAD_CHANGED"
+    WORKSPACE_EXEC_FAILED = "WORKSPACE_EXEC_FAILED"
+    WORKSPACE_TIMEOUT = "WORKSPACE_TIMEOUT"
+    WORKSPACE_POLICY_VIOLATION = "WORKSPACE_POLICY_VIOLATION"
+    WORKSPACE_STORAGE_LIMIT = "WORKSPACE_STORAGE_LIMIT"
+    WORKSPACE_SCRIPT_REJECTED = "WORKSPACE_SCRIPT_REJECTED"
+    WORKSPACE_NO_CHANGES = "WORKSPACE_NO_CHANGES"
+    WORKSPACE_PUSH_FAILED = "WORKSPACE_PUSH_FAILED"
 
 
 class ErrorResponse(BaseModel):
-    error_code: ErrorCode | str = Field(..., examples=["BRANCH_HEAD_CHANGED"])
-    message: str = Field(..., examples=["The branch head has changed since the client last read it."])
-    suggestion: str | None = Field(default=None, examples=["Read the latest branch head, then retry with the new expected_head_sha."])
+    error_code: ErrorCode | str = Field(..., examples=["WORKSPACE_HEAD_CHANGED"])
+    message: str = Field(..., examples=["Remote branch head changed before commit."])
+    suggestion: str | None = Field(default=None, examples=["Refresh the workspace and retry with the latest expected_head_sha."])
     details: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -62,12 +71,7 @@ class ApiError(Exception):
         self.details = details or {}
 
     def as_response(self) -> ErrorResponse:
-        return ErrorResponse(
-            error_code=self.error_code,
-            message=self.message,
-            suggestion=self.suggestion,
-            details=self.details,
-        )
+        return ErrorResponse(error_code=self.error_code, message=self.message, suggestion=self.suggestion, details=self.details)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

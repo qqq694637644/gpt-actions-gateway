@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -10,21 +10,20 @@ class GatewayBaseModel(BaseModel):
 
 
 class IdempotentRequest(GatewayBaseModel):
-    idempotency_key: str | None = Field(default=None, min_length=8, max_length=200, description="Stable key used to safely retry the same task.")
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=200)
 
 
 class ChangedFile(GatewayBaseModel):
     path: str
-    operation: str
-    previous_sha: str | None = None
-    new_sha: str | None = None
-    additions: int | None = None
-    deletions: int | None = None
-    previous_filename: str | None = None
+    operation: Literal["added", "modified", "deleted", "renamed", "untracked", "conflicted"] | str
+    status: str | None = None
+    previous_path: str | None = None
+    additions: int = 0
+    deletions: int = 0
 
 
 class ErrorExample(BaseModel):
-    error_code: str = "BRANCH_HEAD_CHANGED"
-    message: str = "The branch head has changed since the client last read it."
-    suggestion: str | None = "Read the latest branch head, then retry with the new expected_head_sha."
+    error_code: str = "WORKSPACE_HEAD_CHANGED"
+    message: str = "Remote branch head changed before commit."
+    suggestion: str | None = "Refresh the workspace and retry with the latest expected_head_sha."
     details: dict[str, Any] = {"expected_head_sha": "abc", "actual_head_sha": "def"}

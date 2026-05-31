@@ -1,0 +1,265 @@
+from __future__ import annotations
+
+from app.config.settings import Settings
+from app.errors import ApiError, ErrorCode
+from app.github.client import GitHubClient
+from app.models.workspaces import (
+    PrepareWorkspaceRequest,
+    PrepareWorkspaceResponse,
+    WorkspaceCommitAndPushRequest,
+    WorkspaceCommitAndPushResponse,
+    WorkspaceDiffRequest,
+    WorkspaceDiffResponse,
+    WorkspaceExecPwshRequest,
+    WorkspaceExecPwshResponse,
+    WorkspaceResetRequest,
+    WorkspaceResetResponse,
+    WorkspaceStatusRequest,
+    WorkspaceStatusResponse,
+)
+from app.policy.rules import Policy
+from app.storage.audit import AuditStore
+from app.workspace.exec import PwshExecutor
+from app.workspace.manager import WorkspaceManager, command_hash
+
+
+class WorkspaceService:
+    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings, manager: WorkspaceManager, audit: AuditStore) -> None:
+        self.github = github
+        self.policy = policy
+        self.settings = settings
+        self.manager = manager
+        self.audit = audit
+        self.executor = PwshExecutor(settings)
+
+    async def prepare(self, owner: str, repo: str, request: PrepareWorkspaceRequest) -> PrepareWorkspaceResponse:
+        meta, created, refreshed, changed, dirty = await self.manager.prepare(
+            owner=owner,
+            repo=repo,
+            branch=request.branch,
+            source_pr_number=request.source_pr_number,
+            base_ref=request.base_ref,
+            workspace_id=request.workspace_id,
+            refresh=request.refresh,
+            clean=request.clean,
+        )
+        self._audit(
+            operation_id="prepareWorkspace",
+            owner=owner,
+            repo=repo,
+            workspace_id=meta.workspace_id,
+            branch=meta.branch,
+            head_sha_after=meta.head_sha,
+            changed_files=[item.model_dump() for item in changed],
+        )
+        return PrepareWorkspaceResponse(
+            workspace_id=meta.workspace_id,
+            owner=owner,
+            repo=repo,
+            branch=meta.branch,
+            source_pr_number=meta.source_pr_number,
+            head_sha=meta.head_sha,
+            default_branch=meta.default_branch,
+            dirty=dirty,
+            changed_files=changed,
+            created=created,
+            refreshed=refreshed,
+        )
+
+    async def exec_pwsh(self, owner: str, repo: str, workspace_id: str, request: WorkspaceExecPwshRequest) -> WorkspaceExecPwshResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        timeout = min(request.timeout_seconds or self.settings.workspace_default_timeout_seconds, self.settings.workspace_max_timeout_seconds)
+        max_output = min(request.max_output_bytes or self.settings.workspace_max_output_bytes, self.settings.workspace_max_output_bytes)
+        repo_dir = self.manager.repo_dir(workspace_id)
+        with self.manager.lock(workspace_id):
+            result = await self.executor.execute(repo_dir, script=request.script, timeout_seconds=timeout, max_output_bytes=max_output, allow_network=request.allow_network)
+            changed, _, _ = await self.manager.changed_files(repo_dir)
+            diff_stat = await self.manager.diff_stat(repo_dir)
+        self._audit(
+            operation_id="workspaceExecPwsh",
+            owner=owner,
+            repo=repo,
+            workspace_id=workspace_id,
+            branch=meta.branch,
+            head_sha_before=meta.head_sha,
+            changed_files=[item.model_dump() for item in changed],
+            command_hash=command_hash(request.script),
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+        )
+        return WorkspaceExecPwshResponse(
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            truncated=result.truncated,
+            duration_ms=result.duration_ms,
+            changed_files=changed,
+            diff_stat=diff_stat,
+        )
+
+    async def status(self, owner: str, repo: str, workspace_id: str, request: WorkspaceStatusRequest) -> WorkspaceStatusResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        repo_dir = self.manager.repo_dir(workspace_id)
+        with self.manager.lock(workspace_id):
+            if request.refresh:
+                await self.manager.fetch_branch(repo_dir, meta.branch)
+            head_sha = await self.manager.head_sha(repo_dir)
+            remote_head = await self.manager.remote_head_sha(repo_dir, meta.branch)
+            changed, untracked, conflicts = await self.manager.changed_files(repo_dir)
+            ahead, behind = await self.manager.ahead_behind(repo_dir, meta.branch)
+        return WorkspaceStatusResponse(
+            workspace_id=workspace_id,
+            branch=meta.branch,
+            head_sha=head_sha,
+            remote_head_sha=remote_head,
+            dirty=bool(changed),
+            ahead=ahead,
+            behind=behind,
+            changed_files=changed,
+            untracked_files=untracked,
+            conflicts=conflicts,
+        )
+
+    async def diff(self, owner: str, repo: str, workspace_id: str, request: WorkspaceDiffRequest) -> WorkspaceDiffResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        repo_dir = self.manager.repo_dir(workspace_id)
+        max_bytes = min(request.max_bytes or self.settings.workspace_max_diff_bytes, self.settings.workspace_max_diff_bytes)
+        with self.manager.lock(workspace_id):
+            diff_text, truncated = await self.manager.diff_text(repo_dir, paths=request.paths, stat_only=request.stat_only, max_bytes=max_bytes)
+            diff_stat = diff_text if request.stat_only else await self.manager.diff_stat(repo_dir)
+            changed, _, _ = await self.manager.changed_files(repo_dir)
+        self._audit(
+            operation_id="workspaceDiff",
+            owner=owner,
+            repo=repo,
+            workspace_id=workspace_id,
+            branch=meta.branch,
+            head_sha_before=meta.head_sha,
+            changed_files=[item.model_dump() for item in changed],
+        )
+        return WorkspaceDiffResponse(workspace_id=workspace_id, diff=diff_text, diff_stat=diff_stat, changed_files=changed, truncated=truncated)
+
+    async def commit_and_push(self, owner: str, repo: str, workspace_id: str, request: WorkspaceCommitAndPushRequest) -> WorkspaceCommitAndPushResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        self.policy.assert_write_branch_allowed(request.branch)
+        if request.branch != meta.branch:
+            raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Commit branch must match prepared workspace branch.", status_code=403, details={"workspace_branch": meta.branch, "request_branch": request.branch})
+        scope = f"{owner}/{repo}:{workspace_id}:commit_and_push"
+        payload = request.model_dump()
+        if request.idempotency_key:
+            cached = self.audit.get_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload)
+            if cached:
+                return WorkspaceCommitAndPushResponse(**cached)
+
+        repo_dir = self.manager.repo_dir(workspace_id)
+        with self.manager.lock(workspace_id):
+            await self.manager.fetch_branch(repo_dir, request.branch)
+            remote_head = await self.manager.remote_head_sha(repo_dir, request.branch)
+            if remote_head != request.expected_head_sha:
+                raise ApiError(
+                    ErrorCode.WORKSPACE_HEAD_CHANGED,
+                    "Remote branch head changed before commit.",
+                    status_code=409,
+                    suggestion="Refresh the workspace and retry with the latest expected_head_sha.",
+                    details={"expected_head_sha": request.expected_head_sha, "actual_head_sha": remote_head, "branch": request.branch},
+                )
+            current_branch = await self.manager.current_branch(repo_dir)
+            if current_branch != request.branch:
+                raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Current workspace checkout is not the requested branch.", status_code=409, details={"current_branch": current_branch, "request_branch": request.branch})
+            changed, _, conflicts = await self.manager.changed_files(repo_dir)
+            if conflicts:
+                raise ApiError(ErrorCode.WORKSPACE_DIRTY, "Workspace has unresolved conflicts.", status_code=409, details={"conflicts": conflicts})
+            if not changed:
+                raise ApiError(ErrorCode.WORKSPACE_NO_CHANGES, "Workspace has no changes to commit.", status_code=409)
+            await self.manager.validate_changed_paths(repo_dir, changed)
+            paths = [self.policy.assert_workspace_path_allowed(path) for path in request.paths]
+            await self.manager.git.run(["git", "add", "--", *paths], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+            staged = await self.manager.staged_changed_files(repo_dir)
+            if not staged:
+                await self.manager.git.run(["git", "reset", "--mixed"], cwd=repo_dir)
+                raise ApiError(ErrorCode.WORKSPACE_NO_CHANGES, "Selected paths have no staged changes.", status_code=409)
+            await self.manager.validate_changed_paths(repo_dir, staged)
+            diff_stat_result = await self.manager.git.run(["git", "diff", "--cached", "--stat"], cwd=repo_dir)
+            diff_stat = diff_stat_result.stdout.strip()
+            previous_head = await self.manager.head_sha(repo_dir)
+            if request.dry_run:
+                await self.manager.git.run(["git", "reset", "--mixed"], cwd=repo_dir)
+                response = WorkspaceCommitAndPushResponse(
+                    previous_head_sha=previous_head,
+                    new_head_sha=previous_head,
+                    commit_sha=None,
+                    commit_url=None,
+                    changed_files=staged,
+                    diff_stat=diff_stat,
+                    pushed=False,
+                    dry_run=True,
+                )
+            else:
+                await self.manager.git.run(["git", "config", "user.name", self.settings.workspace_git_user_name], cwd=repo_dir)
+                await self.manager.git.run(["git", "config", "user.email", self.settings.workspace_git_user_email], cwd=repo_dir)
+                await self.manager.git.run(["git", "commit", "-m", request.commit_message], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+                new_head = await self.manager.head_sha(repo_dir)
+                auth_config = await self.github.git_auth_config()
+                push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
+                if push.exit_code != 0:
+                    raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
+                meta.head_sha = new_head
+                from app.workspace.models import save_meta
+
+                save_meta(self.manager.workspace_dir(workspace_id), meta)
+                response = WorkspaceCommitAndPushResponse(
+                    previous_head_sha=previous_head,
+                    new_head_sha=new_head,
+                    commit_sha=new_head,
+                    commit_url=f"https://github.com/{owner}/{repo}/commit/{new_head}",
+                    changed_files=staged,
+                    diff_stat=diff_stat,
+                    pushed=True,
+                    dry_run=False,
+                )
+        self._audit(
+            operation_id="workspaceCommitAndPush",
+            owner=owner,
+            repo=repo,
+            workspace_id=workspace_id,
+            branch=request.branch,
+            head_sha_before=request.expected_head_sha,
+            head_sha_after=response.new_head_sha,
+            changed_files=[item.model_dump() for item in response.changed_files],
+        )
+        if request.idempotency_key:
+            self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
+        return response
+
+    async def reset(self, owner: str, repo: str, workspace_id: str, request: WorkspaceResetRequest) -> WorkspaceResetResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        if request.branch != meta.branch:
+            raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Reset branch must match prepared workspace branch.", status_code=403, details={"workspace_branch": meta.branch, "request_branch": request.branch})
+        repo_dir = self.manager.repo_dir(workspace_id)
+        with self.manager.lock(workspace_id):
+            removed = await self.manager.reset_to_remote(repo_dir, request.branch, clean_untracked=request.clean_untracked)
+            head_sha = await self.manager.head_sha(repo_dir)
+            changed, _, _ = await self.manager.changed_files(repo_dir)
+        self._audit(
+            operation_id="workspaceReset",
+            owner=owner,
+            repo=repo,
+            workspace_id=workspace_id,
+            branch=request.branch,
+            head_sha_after=head_sha,
+            changed_files=[],
+        )
+        return WorkspaceResetResponse(workspace_id=workspace_id, branch=request.branch, head_sha=head_sha, dirty=bool(changed), removed_untracked_files=removed)
+
+    def _assert_workspace(self, owner: str, repo: str, workspace_id: str):
+        self.policy.assert_repo_allowed(owner, repo)
+        meta = self.manager.get_meta(workspace_id)
+        if meta.owner != owner or meta.repo != repo:
+            raise ApiError(ErrorCode.WORKSPACE_NOT_FOUND, "Workspace was not found for this repository.", status_code=404, details={"workspace_id": workspace_id})
+        return meta
+
+    def _audit(self, **kwargs) -> None:
+        try:
+            self.audit.record_workspace_operation(**kwargs)
+        except Exception:
+            pass

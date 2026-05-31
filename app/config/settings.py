@@ -43,12 +43,6 @@ def parse_size_to_bytes(value: int | str | None, default: int | None = None) -> 
 
 
 class Settings(BaseSettings):
-    """Runtime configuration.
-
-    Environment variables use the same names as the field names below. Values such as
-    ``200KB`` and ``1MB`` are accepted for size limits.
-    """
-
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = "development"
@@ -71,36 +65,38 @@ class Settings(BaseSettings):
     write_branch_prefix: str = "gpt/"
     default_base_branch: str = "main"
 
-    max_file_size: int = Field(default=200 * 1024)
-    max_total_read_size: int = Field(default=500 * 1024)
-    max_total_commit_size: int = Field(default=1024 * 1024)
-    max_files_per_commit: int = 20
-    max_log_bytes: int = 80_000
-    max_log_lines: int = 500
-    max_blob_read_bytes: int = 2 * 1024 * 1024
-    max_snapshot_bytes: int = 50 * 1024 * 1024
-    max_search_file_bytes: int = 200 * 1024
-
     allow_workflow_edit: bool = False
     allow_delete_files: bool = False
-    allow_rerun_ci: bool = False
-    allow_auto_merge: bool = False
-    enable_debug_routes: bool = False
+
+    max_log_bytes: int = Field(default=80_000)
+    max_log_lines: int = 500
+    max_blob_read_bytes: int = Field(default=2 * 1024 * 1024)
+
+    workspace_root: str = "./data/workspaces"
+    workspace_mirror_root: str = "./data/mirrors"
+    workspace_default_timeout_seconds: int = 60
+    workspace_max_timeout_seconds: int = 300
+    workspace_max_output_bytes: int = Field(default=80_000)
+    workspace_max_diff_bytes: int = Field(default=200_000)
+    workspace_max_changed_files: int = 200
+    workspace_ttl_hours: int = 24
+    workspace_max_count: int = 50
+    workspace_allow_network: bool = False
+    workspace_shell: str = "pwsh"
+    workspace_git_user_name: str = "gpt-actions-gateway"
+    workspace_git_user_email: str = "gpt-actions-gateway@users.noreply.github.com"
 
     rate_limit_per_minute: int = 60
-    audit_db_url: str = "sqlite:///./audit.db"
+    audit_db_url: str = "sqlite:///./data/audit.db"
     request_timeout_seconds: float = 30.0
 
     excluded_tree_dirs: str = "node_modules,dist,build,.git,vendor,.venv,venv,__pycache__,coverage,.next,.turbo"
 
     @field_validator(
-        "max_file_size",
-        "max_total_read_size",
-        "max_total_commit_size",
         "max_log_bytes",
         "max_blob_read_bytes",
-        "max_snapshot_bytes",
-        "max_search_file_bytes",
+        "workspace_max_output_bytes",
+        "workspace_max_diff_bytes",
         mode="before",
     )
     @classmethod

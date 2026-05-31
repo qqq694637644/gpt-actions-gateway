@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import Field
 
@@ -50,75 +50,6 @@ class CIRun(GatewayBaseModel):
     jobs: list[CIJob] = Field(default_factory=list)
 
 
-class CIStatusResponse(GatewayBaseModel):
-    matched_by: str
-    status: str
-    conclusion: str | None = None
-    workflow_runs: list[CIRun]
-    warning: str | None = None
-
-
-class CIDebugError(GatewayBaseModel):
-    status_code: int
-    error_code: str
-    message: str
-    suggestion: str | None = None
-    details: dict[str, Any] = Field(default_factory=dict)
-    exception_type: str | None = None
-
-
-class CIDebugStatusResponse(GatewayBaseModel):
-    ok: bool
-    owner: str
-    repo: str
-    commit_sha: str | None = None
-    branch: str | None = None
-    pr_number: int | None = None
-    workflow_id: str | None = None
-    event: str | None = None
-    created_after: str | None = None
-    result: CIStatusResponse | None = None
-    error: CIDebugError | None = None
-
-
-class GatewayDebugPingResponse(GatewayBaseModel):
-    ok: bool
-    route: str
-    version: str
-    app_env: str
-    public_base_url: str
-
-
-class RepoDebugPingResponse(GatewayBaseModel):
-    ok: bool
-    route: str
-    version: str
-    owner: str
-    repo: str
-    app_env: str
-    allow_all_repos: bool
-    allow_workflow_edit: bool
-    allow_rerun_ci: bool
-
-
-class GitHubDebugResponse(GatewayBaseModel):
-    ok: bool
-    route: str
-    version: str
-    owner: str
-    repo: str
-    params: dict[str, Any] = Field(default_factory=dict)
-    payload: dict[str, Any] | list[Any] | None = None
-    error: CIDebugError | None = None
-
-
-class WorkflowRunsDebugRequest(GatewayBaseModel):
-    head_sha: str | None = None
-    branch: str | None = None
-    workflow_id: str | None = None
-    event: str | None = None
-
-
 class CIStatusQueryRequest(GatewayBaseModel):
     commit_sha: str | None = None
     branch: str | None = None
@@ -126,6 +57,14 @@ class CIStatusQueryRequest(GatewayBaseModel):
     workflow_id: str | None = None
     event: str | None = None
     created_after: str | None = None
+
+
+class CIStatusResponse(GatewayBaseModel):
+    matched_by: str
+    status: str
+    conclusion: str | None = None
+    workflow_runs: list[CIRun]
+    warning: str | None = None
 
 
 class GetCiRunRequest(GatewayBaseModel):
@@ -148,14 +87,6 @@ class GetCiJobsResponse(GatewayBaseModel):
     run_attempt: int | None = None
     jobs: list[CIJob]
     total_count: int
-
-
-class GetCiJobRequest(GatewayBaseModel):
-    job_id: int = Field(ge=1)
-
-
-class GetCiJobResponse(GatewayBaseModel):
-    job: CIJob
 
 
 class FailedLogQueryRequest(GatewayBaseModel):
@@ -227,32 +158,6 @@ class RunLogResponse(GatewayBaseModel):
     truncated: bool = False
 
 
-class DispatchWorkflowRequest(GatewayBaseModel):
-    workflow_id: str
-    ref: str
-    inputs: dict[str, Any] = Field(default_factory=dict)
-
-
-class CIActionAcceptedResponse(GatewayBaseModel):
-    accepted: bool
-    message: str
-    run_id: int | None = None
-    job_id: int | None = None
-    workflow_id: str | None = None
-
-
-class RerunWorkflowRunRequest(GatewayBaseModel):
-    run_id: int = Field(ge=1)
-
-
-class RerunFailedJobsRequest(GatewayBaseModel):
-    run_id: int = Field(ge=1)
-
-
-class RerunJobRequest(GatewayBaseModel):
-    job_id: int = Field(ge=1)
-
-
 class Artifact(GatewayBaseModel):
     artifact_id: int
     name: str
@@ -277,7 +182,7 @@ class ListArtifactsResponse(GatewayBaseModel):
 
 class ReadArtifactTextRequest(GatewayBaseModel):
     artifact_id: int = Field(ge=1)
-    path: str | None = Field(default=None, description="Optional exact path, prefix, or glob inside the artifact zip.")
+    path: str | None = None
     max_files: int = Field(default=20, ge=1, le=50)
     max_bytes_per_file: int | None = Field(default=None, ge=1)
 

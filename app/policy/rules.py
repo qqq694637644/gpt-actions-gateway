@@ -11,22 +11,23 @@ from app.errors import ApiError, ErrorCode
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _PURPOSE_RE = re.compile(r"[^a-z0-9-]+")
 
-DEFAULT_DENY_WRITE_PATTERNS = [
-    ".github/actions/*",
-    ".github/dependabot.yml",
-    "CODEOWNERS",
-    ".github/CODEOWNERS",
-    "docs/CODEOWNERS",
+DENY_WRITE_PATTERNS = [
     ".env",
     ".env.*",
     "*.pem",
-    "*.key",
     "*.p12",
     "*.pfx",
-    "secrets.*",
-    ".gitmodules",
+    "*.key",
+    "*.crt",
+    "*.cer",
+    "secrets/**",
+    "credentials/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    "coverage/**",
+    ".git/**",
 ]
-
 WORKFLOW_PATTERNS = [".github/workflows/*"]
 DENY_WRITE_DIRS = {".git", "dist", "build", "node_modules", "vendor", ".next", ".turbo", "coverage"}
 BINARY_DENY_EXTENSIONS = {
@@ -74,6 +75,8 @@ def branch_matches(branch: str, patterns: Iterable[str]) -> bool:
 
 def normalize_path(path: str) -> str:
     raw = path.replace("\\", "/").strip()
+    if raw == ".":
+        return "."
     if not raw or raw.startswith("/"):
         raise ApiError(ErrorCode.PATH_NOT_ALLOWED, "Path must be a non-empty relative POSIX path.", status_code=400)
     parts = PurePosixPath(raw).parts
@@ -108,7 +111,6 @@ class Policy:
             )
 
     def assert_read_ref_allowed(self, ref: str) -> None:
-        # Exact commit SHA reads are allowed because they cannot move and are safer than floating refs.
         if is_sha(ref):
             return
         if not branch_matches(ref, self.settings.read_branch_patterns):
@@ -116,11 +118,13 @@ class Policy:
                 ErrorCode.BRANCH_NOT_ALLOWED,
                 f"Reading ref {ref!r} is not allowed.",
                 status_code=403,
-                suggestion="Use one of READ_BRANCH_ALLOWLIST, or read by exact commit SHA.",
+                suggestion="Use READ_BRANCH_ALLOWLIST or read by exact commit SHA.",
                 details={"ref": ref, "allowlist": self.settings.read_branch_patterns},
             )
 
     def assert_base_branch_allowed(self, branch: str) -> None:
+        if is_sha(branch):
+            return
         if not branch_matches(branch, self.settings.base_branch_patterns):
             raise ApiError(
                 ErrorCode.BASE_BRANCH_NOT_ALLOWED,
@@ -131,46 +135,31 @@ class Policy:
             )
 
     def assert_write_branch_allowed(self, branch: str) -> None:
-        forbidden_prefixes = ("main", "master", "develop", "release/", "production/", "hotfix/")
-        if branch == self.settings.write_branch_prefix.rstrip("/") or not branch.startswith(self.settings.write_branch_prefix):
+        forbidden_exact = {"main", "master", "develop"}
+        forbidden_prefixes = ("release/", "production/", "hotfix/")
+        if branch in forbidden_exact or branch.startswith(forbidden_prefixes):
+            raise ApiError(ErrorCode.BRANCH_NOT_ALLOWED, f"Branch {branch!r} is forbidden for writes.", status_code=403)
+        prefix = self.settings.write_branch_prefix
+        if branch == prefix.rstrip("/") or not branch.startswith(prefix):
             raise ApiError(
                 ErrorCode.BRANCH_NOT_ALLOWED,
                 "Writes are only allowed to GPT work branches.",
                 status_code=403,
-                suggestion=f"Create or use a branch whose name starts with {self.settings.write_branch_prefix!r}.",
-                details={"branch": branch, "required_prefix": self.settings.write_branch_prefix},
-            )
-        if branch.startswith(forbidden_prefixes):
-            raise ApiError(ErrorCode.BRANCH_NOT_ALLOWED, f"Branch {branch!r} is forbidden for writes.", status_code=403)
-
-    def assert_auto_merge_allowed(self) -> None:
-        if not self.settings.allow_auto_merge:
-            raise ApiError(
-                ErrorCode.AUTO_MERGE_NOT_ALLOWED,
-                "自动合并 PR 已被禁用。",
-                status_code=403,
-                suggestion="确认风险后，将 ALLOW_AUTO_MERGE=true 并重启服务。",
+                suggestion=f"Create or use a branch whose name starts with {prefix!r}.",
+                details={"branch": branch, "required_prefix": prefix},
             )
 
-    def assert_tree_path_allowed(self, path: str | None) -> str | None:
-        if path is None or path == "":
-            return None
-        return normalize_path(path)
-
-    def is_excluded_tree_entry(self, path: str) -> bool:
-        parts = PurePosixPath(path).parts
-        return any(part in self.settings.excluded_dir_names for part in parts)
-
-    def assert_read_path_allowed(self, path: str) -> str:
+    def assert_workspace_path_allowed(self, path: str) -> str:
         return normalize_path(path)
 
     def assert_write_path_allowed(self, path: str, *, operation: str = "upsert") -> str:
         normalized = normalize_path(path)
+        if normalized == ".":
+            return normalized
         parts = PurePosixPath(normalized).parts
         if any(part in DENY_WRITE_DIRS for part in parts):
             raise ApiError(ErrorCode.PATH_NOT_ALLOWED, f"Writing to generated or dependency path {normalized!r} is not allowed.", status_code=403)
-
-        if operation == "delete" and not self.settings.allow_delete_files:
+        if operation == "deleted" and not self.settings.allow_delete_files:
             raise ApiError(
                 ErrorCode.DELETE_NOT_ALLOWED,
                 "Deleting files is disabled.",
@@ -178,21 +167,17 @@ class Policy:
                 suggestion="Set ALLOW_DELETE_FILES=true only after reviewing the risk.",
                 details={"path": normalized},
             )
-
-        if any(fnmatch.fnmatchcase(normalized, pattern) for pattern in WORKFLOW_PATTERNS):
-            if not self.settings.allow_workflow_edit:
-                raise ApiError(
-                    ErrorCode.WORKFLOW_EDIT_NOT_ALLOWED,
-                    "Editing GitHub workflow files is disabled.",
-                    status_code=403,
-                    suggestion="Keep ALLOW_WORKFLOW_EDIT=false for MVP; edit workflows manually if needed.",
-                    details={"path": normalized},
-                )
-
-        for pattern in DEFAULT_DENY_WRITE_PATTERNS:
+        if any(fnmatch.fnmatchcase(normalized, pattern) for pattern in WORKFLOW_PATTERNS) and not self.settings.allow_workflow_edit:
+            raise ApiError(
+                ErrorCode.WORKFLOW_EDIT_NOT_ALLOWED,
+                "Editing GitHub workflow files is disabled.",
+                status_code=403,
+                suggestion="Set ALLOW_WORKFLOW_EDIT=true only after reviewing workflow risk.",
+                details={"path": normalized},
+            )
+        for pattern in DENY_WRITE_PATTERNS:
             if fnmatch.fnmatchcase(normalized, pattern):
                 raise ApiError(ErrorCode.PATH_NOT_ALLOWED, f"Path {normalized!r} is blocked by write policy.", status_code=403)
-
         if self.has_binary_extension(normalized):
             raise ApiError(ErrorCode.BINARY_FILE_NOT_ALLOWED, "Binary-like files cannot be written by this gateway.", status_code=403, details={"path": normalized})
         return normalized
@@ -207,15 +192,9 @@ class Policy:
             return False
         if b"\x00" in data[:4096]:
             return True
-        # Heuristic: lots of replacement/control bytes usually means binary.
-        text_controls = sum(1 for byte in data[:4096] if byte < 9 or (13 < byte < 32))
-        return text_controls / min(len(data), 4096) > 0.20
+        control = sum(1 for byte in data[:4096] if byte < 9 or (13 < byte < 32))
+        return control / min(len(data), 4096) > 0.20
 
     def assert_file_size(self, size: int, *, max_size: int, error_code: ErrorCode = ErrorCode.FILE_TOO_LARGE) -> None:
         if size > max_size:
-            raise ApiError(
-                error_code,
-                f"File or payload is too large: {size} bytes > {max_size} bytes.",
-                status_code=413,
-                details={"actual_bytes": size, "max_bytes": max_size},
-            )
+            raise ApiError(error_code, f"File or payload is too large: {size} bytes > {max_size} bytes.", status_code=413, details={"actual_bytes": size, "max_bytes": max_size})

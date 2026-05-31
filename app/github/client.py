@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import base64
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -21,7 +20,7 @@ class GitHubClient:
             headers={
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": settings.github_api_version,
-                "User-Agent": "gpt-actions-gateway/1.0",
+                "User-Agent": "gpt-actions-gateway-v2/2.0",
             },
             follow_redirects=False,
         )
@@ -29,6 +28,30 @@ class GitHubClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def get_token(self) -> str:
+        return await self._auth.get_token(self._client)
+
+    def git_remote_url(self, owner: str, repo: str) -> str:
+        parsed = urlparse(self.settings.github_api_base_url)
+        if parsed.netloc == "api.github.com":
+            return f"https://github.com/{owner}/{repo}.git"
+        base_path = parsed.path.rstrip("/")
+        if base_path.endswith("/api/v3"):
+            base_path = base_path[: -len("/api/v3")]
+        host_base = f"{parsed.scheme}://{parsed.netloc}{base_path}".rstrip("/")
+        return f"{host_base}/{owner}/{repo}.git"
+
+    async def git_auth_config(self) -> list[str]:
+        token = await self.get_token()
+        return [
+            "-c",
+            f"http.extraHeader=Authorization: Bearer {token}",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.askPass=",
+        ]
 
     async def _request(
         self,
@@ -42,19 +65,12 @@ class GitHubClient:
         raw_bytes: bool = False,
         headers: dict[str, str] | None = None,
     ) -> Any:
-        token = await self._auth.get_token(self._client)
+        token = await self.get_token()
         request_headers = {"Authorization": f"Bearer {token}"}
         if headers:
             request_headers.update(headers)
         try:
-            response = await self._client.request(
-                method,
-                path,
-                params=params,
-                json=json,
-                headers=request_headers,
-                follow_redirects=follow_redirects,
-            )
+            response = await self._client.request(method, path, params=params, json=json, headers=request_headers, follow_redirects=follow_redirects)
         except httpx.TimeoutException as exc:
             raise ApiError(
                 ErrorCode.GITHUB_ERROR,
@@ -108,17 +124,8 @@ class GitHubClient:
     async def get_repository(self, owner: str, repo: str) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}")
 
-    async def list_branches(self, owner: str, repo: str, *, protected: bool | None = None, per_page: int = 100) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"per_page": per_page}
-        if protected is not None:
-            params["protected"] = str(protected).lower()
-        return await self._request("GET", f"/repos/{owner}/{repo}/branches", params=params)
-
     async def get_branch(self, owner: str, repo: str, branch: str) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/branches/{self._path_q(branch)}")
-
-    async def get_branch_protection(self, owner: str, repo: str, branch: str) -> dict[str, Any]:
-        return await self._request("GET", f"/repos/{owner}/{repo}/branches/{self._path_q(branch)}/protection")
 
     async def get_ref(self, owner: str, repo: str, ref: str) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/git/ref/{self._path_q(ref)}")
@@ -130,77 +137,8 @@ class GitHubClient:
     async def create_ref(self, owner: str, repo: str, branch: str, sha: str) -> dict[str, Any]:
         return await self._request("POST", f"/repos/{owner}/{repo}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha})
 
-    async def update_ref(self, owner: str, repo: str, branch: str, sha: str, *, force: bool = False) -> dict[str, Any]:
-        return await self._request(
-            "PATCH",
-            f"/repos/{owner}/{repo}/git/refs/heads/{self._path_q(branch)}",
-            json={"sha": sha, "force": force},
-        )
-
     async def get_commit_object(self, owner: str, repo: str, commit_sha: str) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/git/commits/{commit_sha}")
-
-    async def create_tree(self, owner: str, repo: str, base_tree: str | None, tree: list[dict[str, Any]]) -> dict[str, Any]:
-        payload: dict[str, Any] = {"tree": tree}
-        if base_tree:
-            payload["base_tree"] = base_tree
-        return await self._request("POST", f"/repos/{owner}/{repo}/git/trees", json=payload)
-
-    async def create_blob(self, owner: str, repo: str, content: bytes) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            f"/repos/{owner}/{repo}/git/blobs",
-            json={"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
-        )
-
-    async def create_commit(self, owner: str, repo: str, message: str, tree_sha: str, parents: list[str]) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            f"/repos/{owner}/{repo}/git/commits",
-            json={"message": message, "tree": tree_sha, "parents": parents},
-        )
-
-    async def get_tree(self, owner: str, repo: str, tree_sha: str, *, recursive: bool = True) -> dict[str, Any]:
-        params = {"recursive": "1"} if recursive else None
-        return await self._request("GET", f"/repos/{owner}/{repo}/git/trees/{tree_sha}", params=params)
-
-    async def get_contents(self, owner: str, repo: str, path: str, *, ref: str) -> dict[str, Any]:
-        return await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/contents/{self._path_q(path)}",
-            params={"ref": ref},
-        )
-
-    async def create_or_update_file(
-        self,
-        owner: str,
-        repo: str,
-        path: str,
-        *,
-        message: str,
-        content_base64: str,
-        branch: str | None = None,
-        sha: str | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"message": message, "content": content_base64}
-        if branch:
-            payload["branch"] = branch
-        if sha:
-            payload["sha"] = sha
-        return await self._request("PUT", f"/repos/{owner}/{repo}/contents/{self._path_q(path)}", json=payload)
-
-    async def get_blob(self, owner: str, repo: str, blob_sha: str) -> bytes:
-        payload = await self._request("GET", f"/repos/{owner}/{repo}/git/blobs/{blob_sha}")
-        if payload.get("encoding") != "base64":
-            raise ApiError(ErrorCode.GITHUB_ERROR, "Unsupported GitHub blob encoding.", status_code=502, details={"encoding": payload.get("encoding")})
-        return base64.b64decode(payload.get("content", ""), validate=False)
-
-    async def compare_refs(self, owner: str, repo: str, base: str, head: str) -> dict[str, Any]:
-        return await self._request("GET", f"/repos/{owner}/{repo}/compare/{self._path_q(base)}...{self._path_q(head)}")
-
-    async def download_archive(self, owner: str, repo: str, ref: str, *, archive_format: str = "zip") -> bytes:
-        fmt = "zipball" if archive_format == "zip" else "tarball"
-        return await self._request("GET", f"/repos/{owner}/{repo}/{fmt}/{self._path_q(ref)}", follow_redirects=True, raw_bytes=True)
 
     async def list_pull_requests(
         self,
@@ -245,43 +183,7 @@ class GitHubClient:
     async def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> dict[str, Any]:
         return await self._request("POST", f"/repos/{owner}/{repo}/issues/{issue_number}/comments", json={"body": body})
 
-    async def request_pull_reviewers(self, owner: str, repo: str, pr_number: int, reviewers: list[str], team_reviewers: list[str] | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"reviewers": reviewers}
-        if team_reviewers:
-            payload["team_reviewers"] = team_reviewers
-        return await self._request("POST", f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers", json=payload)
-
-    async def request_pull_request_reviewers(self, owner: str, repo: str, pr_number: int, *, reviewers: list[str], team_reviewers: list[str] | None = None) -> dict[str, Any]:
-        return await self.request_pull_reviewers(owner, repo, pr_number, reviewers, team_reviewers)
-
-    async def add_issue_labels(self, owner: str, repo: str, issue_number: int, labels: list[str]) -> dict[str, Any]:
-        return await self._request("POST", f"/repos/{owner}/{repo}/issues/{issue_number}/labels", json={"labels": labels})
-
-    async def merge_pull_request(
-        self,
-        owner: str,
-        repo: str,
-        pr_number: int,
-        *,
-        merge_method: str,
-        commit_title: str | None = None,
-        commit_message: str | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"merge_method": merge_method}
-        if commit_title is not None:
-            payload["commit_title"] = commit_title
-        if commit_message is not None:
-            payload["commit_message"] = commit_message
-        return await self._request("PUT", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", json=payload)
-
-    async def list_workflow_runs(
-        self,
-        owner: str,
-        repo: str,
-        *,
-        workflow_id: str | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    async def list_workflow_runs(self, owner: str, repo: str, *, workflow_id: str | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if workflow_id:
             path = f"/repos/{owner}/{repo}/actions/workflows/{self._q(workflow_id)}/runs"
         else:
@@ -298,47 +200,14 @@ class GitHubClient:
             path = f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs"
         return await self._request("GET", path, params={"per_page": 100})
 
-    async def get_job(self, owner: str, repo: str, job_id: int) -> dict[str, Any]:
-        return await self._request("GET", f"/repos/{owner}/{repo}/actions/jobs/{job_id}")
-
     async def download_job_logs(self, owner: str, repo: str, job_id: int) -> str:
-        return await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
-            follow_redirects=True,
-            raw_text=True,
-        )
+        return await self._request("GET", f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs", follow_redirects=True, raw_text=True)
 
     async def download_run_logs(self, owner: str, repo: str, run_id: int) -> bytes:
-        return await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs",
-            follow_redirects=True,
-            raw_bytes=True,
-        )
-
-    async def dispatch_workflow(self, owner: str, repo: str, workflow_id: str, *, ref: str, inputs: dict[str, Any] | None = None) -> None:
-        payload: dict[str, Any] = {"ref": ref}
-        if inputs:
-            payload["inputs"] = inputs
-        await self._request("POST", f"/repos/{owner}/{repo}/actions/workflows/{self._q(workflow_id)}/dispatches", json=payload)
-
-    async def rerun_workflow_run(self, owner: str, repo: str, run_id: int) -> None:
-        await self._request("POST", f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
-
-    async def rerun_failed_jobs(self, owner: str, repo: str, run_id: int) -> None:
-        await self._request("POST", f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs")
-
-    async def rerun_job(self, owner: str, repo: str, job_id: int) -> None:
-        await self._request("POST", f"/repos/{owner}/{repo}/actions/jobs/{job_id}/rerun")
+        return await self._request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs", follow_redirects=True, raw_bytes=True)
 
     async def list_artifacts_for_run(self, owner: str, repo: str, run_id: int, *, per_page: int = 100) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts", params={"per_page": per_page})
 
     async def download_artifact(self, owner: str, repo: str, artifact_id: int) -> bytes:
-        return await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip",
-            follow_redirects=True,
-            raw_bytes=True,
-        )
+        return await self._request("GET", f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip", follow_redirects=True, raw_bytes=True)
