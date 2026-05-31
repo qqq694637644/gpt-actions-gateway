@@ -45,7 +45,6 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 - `getCiRun`
 - `rerunWorkflowRun`
 - `getCiJobs`
-- `getCiJob`
 - `rerunWorkflowJob`
 - `getJobLog`
 - `getRunLog`

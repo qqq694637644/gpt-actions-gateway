@@ -19,8 +19,6 @@ from app.models.ci import (
     DispatchWorkflowResponse,
     FailedCILogResponse,
     FailedLogQueryRequest,
-    GetCiJobRequest,
-    GetCiJobResponse,
     GetCiJobsRequest,
     GetCiJobsResponse,
     GetCiRunRequest,
@@ -366,11 +364,6 @@ async def rerun_workflow_run(
 @router.post("/ci/jobs/list", operation_id="getCiJobs", summary="List jobs for a workflow run", response_model=GetCiJobsResponse)
 async def get_ci_jobs(owner: str, repo: str, request: GetCiJobsRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiJobsResponse:
     return await CIService(github, pol, settings).get_ci_jobs(owner, repo, request)
-
-
-@router.post("/ci/jobs/get", operation_id="getCiJob", summary="Get a workflow job", response_model=GetCiJobResponse)
-async def get_ci_job(owner: str, repo: str, request: GetCiJobRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiJobResponse:
-    return await CIService(github, pol, settings).get_ci_job(owner, repo, request)
 
 
 @router.post("/ci/jobs/rerun", operation_id="rerunWorkflowJob", summary="Rerun a single workflow job", response_model=RerunWorkflowJobResponse)

@@ -11,7 +11,6 @@ from app.errors import ApiError, ErrorCode
 from app.models.ci import (
     DeleteCacheRequest,
     DispatchWorkflowRequest,
-    GetCiJobRequest,
     GetCiJobsRequest,
     GetCiRunRequest,
     GetJobLogRequest,
@@ -154,13 +153,11 @@ def test_ci_run_jobs_job_and_logs() -> None:
 
     run = asyncio.run(service.get_ci_run("acme", "demo", GetCiRunRequest(run_id=77)))
     jobs = asyncio.run(service.get_ci_jobs("acme", "demo", GetCiJobsRequest(run_id=77, run_attempt=2)))
-    job = asyncio.run(service.get_ci_job("acme", "demo", GetCiJobRequest(job_id=10)))
     job_log = asyncio.run(service.get_job_log("acme", "demo", GetJobLogRequest(job_id=10, step_name="pytest")))
     run_log = asyncio.run(service.get_run_log("acme", "demo", GetRunLogRequest(run_id=77, path_contains="job1")))
 
     assert run.run.run_id == 77
     assert jobs.jobs[0].name == "build"
-    assert job.job.failed_steps[0].name == "pytest"
     assert "FAILED test_example.py" in job_log.log
     assert run_log.entries[0].name == "job1/1_build.txt"
 

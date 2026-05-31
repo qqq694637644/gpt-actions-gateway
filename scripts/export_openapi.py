@@ -32,7 +32,6 @@ PUBLIC_OPERATION_IDS = {
     "getCiRun",
     "rerunWorkflowRun",
     "getCiJobs",
-    "getCiJob",
     "rerunWorkflowJob",
     "getJobLog",
     "getRunLog",

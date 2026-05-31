@@ -5,7 +5,7 @@ from scripts.export_openapi import PUBLIC_OPERATION_IDS, collect_operation_ids
 def test_openapi_contains_only_v2_operation_ids():
     schema = app.openapi()
     assert collect_operation_ids(schema) == PUBLIC_OPERATION_IDS
-    assert len(PUBLIC_OPERATION_IDS) == 30
+    assert len(PUBLIC_OPERATION_IDS) == 29
 
 
 def test_hidden_and_removed_operation_ids_are_absent():
@@ -29,6 +29,7 @@ def test_hidden_and_removed_operation_ids_are_absent():
         "getDefaultBranch",
         "rerunFailedJobs",
         "rerunJob",
+        "getCiJob",
     }
     schema = app.openapi()
     assert collect_operation_ids(schema).isdisjoint(hidden_or_removed)

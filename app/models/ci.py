@@ -89,14 +89,6 @@ class GetCiJobsResponse(GatewayBaseModel):
     total_count: int
 
 
-class GetCiJobRequest(GatewayBaseModel):
-    job_id: int = Field(ge=1)
-
-
-class GetCiJobResponse(GatewayBaseModel):
-    job: CIJob
-
-
 class DispatchWorkflowRequest(IdempotentRequest):
     workflow_id: str = Field(min_length=1, max_length=200)
     ref: str = Field(min_length=1, max_length=300)

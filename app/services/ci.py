@@ -27,8 +27,6 @@ from app.models.ci import (
     FailedCILogResponse,
     FailedJobLog,
     FailedStep,
-    GetCiJobRequest,
-    GetCiJobResponse,
     GetCiJobsRequest,
     GetCiJobsResponse,
     GetCiRunRequest,
@@ -143,11 +141,6 @@ class CIService:
         payload = await self.github.list_jobs_for_run(owner, repo, request.run_id, run_attempt=request.run_attempt)
         jobs = [self._job_from_github(job) for job in payload.get("jobs", [])]
         return GetCiJobsResponse(run_id=request.run_id, run_attempt=request.run_attempt, jobs=jobs, total_count=int(payload.get("total_count") or len(jobs)))
-
-    async def get_ci_job(self, owner: str, repo: str, request: GetCiJobRequest) -> GetCiJobResponse:
-        self.policy.assert_repo_allowed(owner, repo)
-        raw_job = await self.github.get_workflow_job(owner, repo, request.job_id)
-        return GetCiJobResponse(job=self._job_from_github(raw_job))
 
     async def dispatch_workflow(self, owner: str, repo: str, request: DispatchWorkflowRequest) -> DispatchWorkflowResponse:
         self.policy.assert_repo_allowed(owner, repo)
