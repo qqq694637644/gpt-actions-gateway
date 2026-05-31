@@ -82,6 +82,7 @@ mergePullRequest(expected_head_sha=当前 head_sha)
 
 - 先创建或使用 `gpt/*` 工作分支；不要直接修改 `main`, `master`, `develop`, `release/*`, `production/*`, `hotfix/*`。
 - 对代码操作必须先 `prepareWorkspace`。
+- `workspace_id` 必须使用 `ws_` 前缀（例如 `ws_repofix`、`ws_pr123_review`）。创建或重新准备 workspace 时始终提供符合规则的 id；如果出现“workspace 名称格式需要带 ws_ 前缀”错误，应立即改用带 `ws_` 前缀的 workspace_id 重试，而不是重复失败调用。
 - 小范围文本修改优先用 `workspaceApplyPatch`；完整 UTF-8 文本文件替换用 `workspaceWriteFile`。
 - `workspaceApplyPatch` 和 `workspaceWriteFile` 只改 workspace，不提交、不 push、不建 PR、不触发 CI。
 - 提交前必须查看 `workspaceStatus` 或 `workspaceDiff`。
