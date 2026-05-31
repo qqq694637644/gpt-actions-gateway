@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 import shutil
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -14,7 +16,7 @@ from app.github.client import GitHubClient
 from app.models.common import ChangedFile
 from app.policy.rules import Policy, is_sha
 from app.workspace.git import GitRunner, attach_numstat, normalize_git_paths, parse_numstat, parse_porcelain_z
-from app.workspace.models import WorkspaceMeta, load_meta, save_meta
+from app.workspace.models import MirrorPrepareStats, WorkspaceMeta, WorkspacePrepareStats, load_meta, save_meta
 
 
 class WorkspaceManager:
@@ -29,7 +31,7 @@ class WorkspaceManager:
         self.mirror_root.mkdir(parents=True, exist_ok=True)
 
     def workspace_dir(self, workspace_id: str) -> Path:
-        if not workspace_id.startswith("ws_") or not workspace_id.replace("_", "").replace("-", "").isalnum():
+        if not _WORKSPACE_ID_RE.fullmatch(workspace_id):
             raise ApiError(ErrorCode.WORKSPACE_NOT_FOUND, "Workspace id is invalid.", status_code=404)
         return self.root / workspace_id
 
@@ -72,7 +74,58 @@ class WorkspaceManager:
         workspace_id: str | None,
         refresh: bool,
         clean: bool,
-    ) -> tuple[WorkspaceMeta, bool, bool, list[ChangedFile], bool]:
+    ) -> WorkspacePrepareStats:
+        return await self._prepare_workspace(
+            owner=owner,
+            repo=repo,
+            branch=branch,
+            source_pr_number=source_pr_number,
+            base_ref=base_ref,
+            workspace_id=workspace_id,
+            refresh=refresh,
+            clean=clean,
+            ensure_mirror=True,
+        )
+
+    async def prepare_from_mirror(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        branch: str | None,
+        source_pr_number: int | None,
+        base_ref: str | None,
+        workspace_id: str | None,
+        clean: bool,
+    ) -> WorkspacePrepareStats:
+        return await self._prepare_workspace(
+            owner=owner,
+            repo=repo,
+            branch=branch,
+            source_pr_number=source_pr_number,
+            base_ref=base_ref,
+            workspace_id=workspace_id,
+            refresh=False,
+            clean=clean,
+            ensure_mirror=False,
+        )
+
+    async def prepare_mirror(self, owner: str, repo: str, *, refresh: bool) -> MirrorPrepareStats:
+        return await self._ensure_mirror(owner, repo, refresh=refresh)
+
+    async def _prepare_workspace(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        branch: str | None,
+        source_pr_number: int | None,
+        base_ref: str | None,
+        workspace_id: str | None,
+        refresh: bool,
+        clean: bool,
+        ensure_mirror: bool,
+    ) -> WorkspacePrepareStats:
         self.policy.assert_repo_allowed(owner, repo)
         selected = [branch is not None, source_pr_number is not None, base_ref is not None]
         if sum(selected) != 1:
@@ -96,24 +149,25 @@ class WorkspaceManager:
             target_ref = base_ref or default_branch
             self.policy.assert_read_ref_allowed(target_ref)
 
-        created = False
+        explicit_workspace_id = workspace_id is not None
         if workspace_id is None:
             self._enforce_workspace_count()
             workspace_id = self._new_workspace_id()
-            created = True
         workspace_dir = self.workspace_dir(workspace_id)
         repo_dir = workspace_dir / "repo"
+        workspace_exists = (workspace_dir / "meta.json").exists()
+        created = not workspace_exists
+        if explicit_workspace_id and not workspace_exists:
+            self._enforce_workspace_count()
+        start_total = time.perf_counter()
         with self.lock(workspace_id):
-            if (workspace_dir / "meta.json").exists():
+            if workspace_exists:
                 meta = load_meta(workspace_dir)
                 if meta.owner != owner or meta.repo != repo:
                     raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Workspace belongs to a different repository.", status_code=403)
                 if meta.branch != target_ref:
                     raise ApiError(ErrorCode.WORKSPACE_DIRTY, "Workspace already targets a different ref; create a new workspace.", status_code=409, details={"workspace_branch": meta.branch, "requested_branch": target_ref})
-                created = False
             else:
-                if not created:
-                    self._enforce_workspace_count()
                 workspace_dir.mkdir(parents=True, exist_ok=True)
                 meta = WorkspaceMeta(
                     workspace_id=workspace_id,
@@ -124,36 +178,73 @@ class WorkspaceManager:
                     head_sha="",
                     source_pr_number=source_pr_number,
                 )
-            await self._ensure_mirror(owner, repo, refresh=refresh)
+            if ensure_mirror:
+                mirror_stats = await self._ensure_mirror(owner, repo, refresh=refresh)
+            else:
+                if not self._mirror_path(owner, repo).exists():
+                    raise ApiError(ErrorCode.WORKSPACE_NOT_FOUND, "Mirror was not prepared. Call prepareWorkspaceMirror first.", status_code=404, details={"owner": owner, "repo": repo})
+                pack_bytes, pack_files = self._mirror_stats(owner, repo)
+                mirror_stats = MirrorPrepareStats(stage="reuse", duration_ms=0, pack_bytes=pack_bytes, pack_files=pack_files, refreshed=False)
+            workspace_start = time.perf_counter()
             if not repo_dir.exists():
+                workspace_stage = "clone"
                 await self._clone_workspace(owner, repo, repo_dir)
             else:
+                workspace_stage = "reuse"
                 await self._ensure_origin(owner, repo, repo_dir)
-            refreshed = False
-            if refresh:
+            refreshed = bool(ensure_mirror and refresh)
+            if refreshed:
                 await self.fetch_branch(repo_dir, target_ref)
-                refreshed = True
+            elif not ensure_mirror and repo_dir.exists():
+                await self.fetch_branch_from_mirror(repo_dir, owner, repo, target_ref)
             await self.checkout_ref(repo_dir, target_ref)
-            if clean:
-                await self.reset_to_remote(repo_dir, target_ref, clean_untracked=True)
+            if ensure_mirror:
+                if clean:
+                    await self.reset_to_remote(repo_dir, target_ref, clean_untracked=True)
+            elif clean:
+                await self.reset_to_cached_remote(repo_dir, target_ref, clean_untracked=True)
+            workspace_duration_ms = round((time.perf_counter() - workspace_start) * 1000)
             head_sha = await self.head_sha(repo_dir)
             meta.head_sha = head_sha
             meta.default_branch = default_branch
             meta.source_pr_number = source_pr_number
             save_meta(workspace_dir, meta)
             changed, _, _ = await self.changed_files(repo_dir)
-            return meta, created, refreshed, changed, bool(changed)
+            diagnostics = WorkspacePrepareStats(
+                meta=meta,
+                created=created,
+                refreshed=refreshed,
+                changed_files=changed,
+                dirty=bool(changed),
+                mirror=mirror_stats,
+                workspace_stage=workspace_stage,
+                workspace_duration_ms=workspace_duration_ms,
+                total_duration_ms=round((time.perf_counter() - start_total) * 1000),
+            )
+            return diagnostics
 
-    async def _ensure_mirror(self, owner: str, repo: str, *, refresh: bool) -> None:
+    async def _ensure_mirror(self, owner: str, repo: str, *, refresh: bool) -> MirrorPrepareStats:
         mirror = self._mirror_path(owner, repo)
         mirror.parent.mkdir(parents=True, exist_ok=True)
         remote_url = self.github.git_remote_url(owner, repo)
         auth_config = await self.github.git_auth_config()
+        started = time.perf_counter()
+        stage = "reuse"
+        existed = mirror.exists()
         if not mirror.exists():
+            stage = "clone"
             await self.git.run(["git", *auth_config, "clone", "--mirror", remote_url, str(mirror)], timeout=self.settings.workspace_max_timeout_seconds)
-            return
-        if refresh:
+        elif refresh:
+            stage = "fetch"
             await self.git.run(["git", *auth_config, "--git-dir", str(mirror), "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"], timeout=self.settings.workspace_max_timeout_seconds)
+        pack_bytes, pack_files = self._mirror_stats(owner, repo)
+        return MirrorPrepareStats(
+            stage=stage,
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            pack_bytes=pack_bytes,
+            pack_files=pack_files,
+            refreshed=refresh and existed,
+        )
 
     async def _clone_workspace(self, owner: str, repo: str, repo_dir: Path) -> None:
         if repo_dir.exists():
@@ -174,6 +265,13 @@ class WorkspaceManager:
         else:
             await self.git.run(["git", *auth_config, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
 
+    async def fetch_branch_from_mirror(self, repo_dir: Path, owner: str, repo: str, branch: str) -> None:
+        mirror = self._mirror_path(owner, repo)
+        if is_sha(branch):
+            await self.git.run(["git", "fetch", str(mirror), branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        else:
+            await self.git.run(["git", "fetch", str(mirror), f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+
     async def checkout_ref(self, repo_dir: Path, ref: str) -> None:
         if is_sha(ref):
             await self.git.run(["git", "checkout", "--detach", ref], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
@@ -185,6 +283,18 @@ class WorkspaceManager:
             await self.git.run(["git", "reset", "--hard", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         else:
             await self.fetch_branch(repo_dir, branch)
+            await self.git.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        removed: list[str] = []
+        if clean_untracked:
+            before = await self.untracked_files(repo_dir)
+            await self.git.run(["git", "clean", "-fd"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+            removed = before
+        return removed
+
+    async def reset_to_cached_remote(self, repo_dir: Path, branch: str, *, clean_untracked: bool) -> list[str]:
+        if is_sha(branch):
+            await self.git.run(["git", "reset", "--hard", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        else:
             await self.git.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         removed: list[str] = []
         if clean_untracked:
@@ -345,6 +455,20 @@ class WorkspaceManager:
     def _mirror_path(self, owner: str, repo: str) -> Path:
         return self.mirror_root / owner / f"{repo}.git"
 
+    def _mirror_stats(self, owner: str, repo: str) -> tuple[int, int]:
+        pack_dir = self._mirror_path(owner, repo) / "objects" / "pack"
+        if not pack_dir.exists():
+            return 0, 0
+        total = 0
+        count = 0
+        for item in pack_dir.glob("*.pack"):
+            try:
+                total += item.stat().st_size
+                count += 1
+            except OSError:
+                continue
+        return total, count
+
     def _new_workspace_id(self) -> str:
         return "ws_" + secrets.token_hex(8)
 
@@ -364,3 +488,6 @@ def _path_is_selected(path: str, selectors: list[str]) -> bool:
 
 def command_hash(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
+
+
+_WORKSPACE_ID_RE = re.compile(r"^ws_[A-Za-z0-9_-]+$")

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
 from app.models.workspaces import (
+    PrepareWorkspaceFromMirrorRequest,
+    PrepareWorkspaceMirrorRequest,
+    PrepareWorkspaceMirrorResponse,
     PrepareWorkspaceRequest,
     PrepareWorkspaceResponse,
     WorkspaceApplyPatchRequest,
@@ -20,6 +25,7 @@ from app.models.workspaces import (
     WorkspaceStatusResponse,
     WorkspaceWriteFileRequest,
     WorkspaceWriteFileResponse,
+    WorkspacePrepareDiagnostics,
 )
 from app.policy.rules import Policy
 from app.storage.audit import AuditStore
@@ -48,7 +54,7 @@ class WorkspaceService:
         self.executor = PwshExecutor(settings)
 
     async def prepare(self, owner: str, repo: str, request: PrepareWorkspaceRequest) -> PrepareWorkspaceResponse:
-        meta, created, refreshed, changed, dirty = await self.manager.prepare(
+        result = await self.manager.prepare(
             owner=owner,
             repo=repo,
             branch=request.branch,
@@ -62,24 +68,80 @@ class WorkspaceService:
             operation_id="prepareWorkspace",
             owner=owner,
             repo=repo,
-            workspace_id=meta.workspace_id,
-            branch=meta.branch,
-            head_sha_after=meta.head_sha,
-            changed_files=[item.model_dump() for item in changed],
+            workspace_id=result.meta.workspace_id,
+            branch=result.meta.branch,
+            head_sha_after=result.meta.head_sha,
+            changed_files=[item.model_dump() for item in result.changed_files],
+            metadata=self._prepare_metadata(result),
         )
         return PrepareWorkspaceResponse(
-            workspace_id=meta.workspace_id,
+            workspace_id=result.meta.workspace_id,
             owner=owner,
             repo=repo,
-            branch=meta.branch,
-            source_pr_number=meta.source_pr_number,
-            head_sha=meta.head_sha,
-            default_branch=meta.default_branch,
-            dirty=dirty,
-            changed_files=changed,
-            created=created,
-            refreshed=refreshed,
+            branch=result.meta.branch,
+            source_pr_number=result.meta.source_pr_number,
+            head_sha=result.meta.head_sha,
+            default_branch=result.meta.default_branch,
+            dirty=result.dirty,
+            changed_files=result.changed_files,
+            created=result.created,
+            refreshed=result.refreshed,
+            diagnostics=self._diagnostics_model(result),
         )
+
+    async def prepare_from_mirror(self, owner: str, repo: str, request: PrepareWorkspaceFromMirrorRequest) -> PrepareWorkspaceResponse:
+        result = await self.manager.prepare_from_mirror(
+            owner=owner,
+            repo=repo,
+            branch=request.branch,
+            source_pr_number=request.source_pr_number,
+            base_ref=request.base_ref,
+            workspace_id=request.workspace_id,
+            clean=request.clean,
+        )
+        self._audit(
+            operation_id="prepareWorkspaceFromMirror",
+            owner=owner,
+            repo=repo,
+            workspace_id=result.meta.workspace_id,
+            branch=result.meta.branch,
+            head_sha_after=result.meta.head_sha,
+            changed_files=[item.model_dump() for item in result.changed_files],
+            metadata=self._prepare_metadata(result),
+        )
+        return PrepareWorkspaceResponse(
+            workspace_id=result.meta.workspace_id,
+            owner=owner,
+            repo=repo,
+            branch=result.meta.branch,
+            source_pr_number=result.meta.source_pr_number,
+            head_sha=result.meta.head_sha,
+            default_branch=result.meta.default_branch,
+            dirty=result.dirty,
+            changed_files=result.changed_files,
+            created=result.created,
+            refreshed=result.refreshed,
+            diagnostics=self._diagnostics_model(result),
+        )
+
+    async def prepare_mirror(self, owner: str, repo: str, request: PrepareWorkspaceMirrorRequest) -> PrepareWorkspaceMirrorResponse:
+        result = await self.manager.prepare_mirror(owner, repo, refresh=request.refresh)
+        diagnostics = WorkspacePrepareDiagnostics(
+            mirror_stage=result.stage,
+            mirror_duration_ms=result.duration_ms,
+            mirror_pack_bytes=result.pack_bytes,
+            mirror_pack_files=result.pack_files,
+            workspace_stage="skip",
+            workspace_duration_ms=0,
+            total_duration_ms=result.duration_ms,
+        )
+        self._audit(
+            operation_id="prepareWorkspaceMirror",
+            owner=owner,
+            repo=repo,
+            metadata={"mirror": asdict(result)},
+        )
+        return PrepareWorkspaceMirrorResponse(owner=owner, repo=repo, refreshed=result.refreshed, diagnostics=diagnostics)
 
     async def exec_pwsh(self, owner: str, repo: str, workspace_id: str, request: WorkspaceExecPwshRequest) -> WorkspaceExecPwshResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)
@@ -406,3 +468,27 @@ class WorkspaceService:
             self.audit.record_workspace_operation(**kwargs)
         except Exception:
             pass
+
+    @staticmethod
+    def _diagnostics_model(result) -> WorkspacePrepareDiagnostics:
+        return WorkspacePrepareDiagnostics(
+            mirror_stage=result.mirror.stage,
+            mirror_duration_ms=result.mirror.duration_ms,
+            mirror_pack_bytes=result.mirror.pack_bytes,
+            mirror_pack_files=result.mirror.pack_files,
+            workspace_stage=result.workspace_stage,
+            workspace_duration_ms=result.workspace_duration_ms,
+            total_duration_ms=result.total_duration_ms,
+        )
+
+    @staticmethod
+    def _prepare_metadata(result) -> dict:
+        return {
+            "created": result.created,
+            "refreshed": result.refreshed,
+            "dirty": result.dirty,
+            "mirror": asdict(result.mirror),
+            "workspace_stage": result.workspace_stage,
+            "workspace_duration_ms": result.workspace_duration_ms,
+            "total_duration_ms": result.total_duration_ms,
+        }

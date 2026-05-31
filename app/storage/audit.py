@@ -74,11 +74,15 @@ class AuditStore:
                     command_hash TEXT,
                     exit_code INTEGER,
                     duration_ms INTEGER,
+                    metadata_json TEXT,
                     actor TEXT,
                     created_at TEXT NOT NULL
                 )
                 """
             )
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(workspace_audit_events)").fetchall()}
+            if "metadata_json" not in columns:
+                self._conn.execute("ALTER TABLE workspace_audit_events ADD COLUMN metadata_json TEXT")
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS idempotency_records (
@@ -130,6 +134,7 @@ class AuditStore:
         command_hash: str | None = None,
         exit_code: int | None = None,
         duration_ms: int | None = None,
+        metadata: dict[str, Any] | None = None,
         actor: str | None = None,
     ) -> None:
         with self._lock:
@@ -137,8 +142,8 @@ class AuditStore:
                 """
                 INSERT INTO workspace_audit_events(
                     operation_id, owner, repo, workspace_id, branch, head_sha_before, head_sha_after,
-                    changed_files_json, command_hash, exit_code, duration_ms, actor, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    changed_files_json, command_hash, exit_code, duration_ms, metadata_json, actor, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     operation_id,
@@ -152,6 +157,7 @@ class AuditStore:
                     command_hash,
                     exit_code,
                     duration_ms,
+                    json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True),
                     actor,
                     utc_now_iso(),
                 ),

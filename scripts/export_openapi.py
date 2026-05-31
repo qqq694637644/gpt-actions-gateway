@@ -9,6 +9,8 @@ sys.path.insert(0, str(ROOT))
 
 PUBLIC_OPERATION_IDS = {
     "prepareWorkspace",
+    "prepareWorkspaceMirror",
+    "prepareWorkspaceFromMirror",
     "workspaceExecPwsh",
     "workspaceStatus",
     "workspaceDiff",

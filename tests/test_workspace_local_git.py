@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 
@@ -7,7 +8,14 @@ import pytest
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.models.workspaces import PrepareWorkspaceRequest, WorkspaceApplyPatchRequest, WorkspaceCommitAndPushRequest, WorkspaceWriteFileRequest
+from app.models.workspaces import (
+    PrepareWorkspaceFromMirrorRequest,
+    PrepareWorkspaceMirrorRequest,
+    PrepareWorkspaceRequest,
+    WorkspaceApplyPatchRequest,
+    WorkspaceCommitAndPushRequest,
+    WorkspaceWriteFileRequest,
+)
 from app.policy.rules import Policy
 from app.services.workspaces import WorkspaceService
 from app.storage.audit import AuditStore
@@ -65,20 +73,25 @@ def make_service(tmp_path: Path, remote: Path) -> tuple[WorkspaceService, Worksp
     return service, manager
 
 
-@pytest.mark.asyncio
-async def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):
+def run(coro):
+    return asyncio.run(coro)
+
+
+def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
 
-    prepared = await service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task"))
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task")))
     repo_dir = manager.repo_dir(prepared.workspace_id)
     (repo_dir / "README.md").write_text("after\n", encoding="utf-8")
 
-    response = await service.commit_and_push(
-        "acme",
-        "demo",
-        prepared.workspace_id,
-        WorkspaceCommitAndPushRequest(branch="gpt/task", expected_head_sha=prepared.head_sha, commit_message="Update README"),
+    response = run(
+        service.commit_and_push(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            WorkspaceCommitAndPushRequest(branch="gpt/task", expected_head_sha=prepared.head_sha, commit_message="Update README"),
+        )
     )
 
     assert response.pushed is True
@@ -88,21 +101,54 @@ async def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):
     assert git("rev-parse", "gpt/task", cwd=remote) == response.new_head_sha
 
 
-@pytest.mark.asyncio
-async def test_workspace_apply_patch_dry_run_and_apply_do_not_push(tmp_path: Path):
+def test_workspace_prepare_explicit_ws_id_reports_created_true(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, _ = make_service(tmp_path, remote)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_custom_1")))
+
+    assert prepared.workspace_id == "ws_custom_1"
+    assert prepared.created is True
+    assert prepared.diagnostics.mirror_stage in {"clone", "fetch"}
+    assert prepared.diagnostics.total_duration_ms >= prepared.diagnostics.mirror_duration_ms
+
+
+def test_workspace_prepare_mirror_then_from_mirror(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, _ = make_service(tmp_path, remote)
+
+    mirror = run(service.prepare_mirror("acme", "demo", PrepareWorkspaceMirrorRequest(refresh=True)))
+    assert mirror.diagnostics.mirror_stage == "clone"
+    assert mirror.diagnostics.workspace_stage == "skip"
+
+    prepared = run(
+        service.prepare_from_mirror(
+            "acme",
+            "demo",
+            PrepareWorkspaceFromMirrorRequest(branch="gpt/task", workspace_id="ws_custom_2"),
+        )
+    )
+
+    assert prepared.created is True
+    assert prepared.diagnostics.mirror_stage == "reuse"
+    assert prepared.diagnostics.workspace_stage in {"clone", "reuse"}
+    assert prepared.head_sha
+
+
+def test_workspace_apply_patch_dry_run_and_apply_do_not_push(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
 
-    prepared = await service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task"))
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task")))
     repo_dir = manager.repo_dir(prepared.workspace_id)
     original_remote_head = git("rev-parse", "gpt/task", cwd=remote)
     patch = "*** Begin Patch\n*** Update File: README.md\n@@\n-before\n+after\n*** End Patch\n"
 
-    dry = await service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch, dry_run=True))
+    dry = run(service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch, dry_run=True)))
     assert dry.applied is False
     assert (repo_dir / "README.md").read_text(encoding="utf-8") == "before\n"
 
-    applied = await service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch))
+    applied = run(service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch)))
     assert applied.applied is True
     assert applied.changed_files[0].path == "README.md"
     assert applied.changed_files[0].operation == "modified"
@@ -110,54 +156,55 @@ async def test_workspace_apply_patch_dry_run_and_apply_do_not_push(tmp_path: Pat
     assert git("rev-parse", "gpt/task", cwd=remote) == original_remote_head
 
 
-@pytest.mark.asyncio
-async def test_workspace_apply_patch_rejects_delete_by_default(tmp_path: Path):
+def test_workspace_apply_patch_rejects_delete_by_default(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
-    prepared = await service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task"))
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task")))
     patch = "*** Begin Patch\n*** Delete File: README.md\n*** End Patch\n"
 
     with pytest.raises(ApiError) as exc:
-        await service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch))
+        run(service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch)))
     assert exc.value.error_code == ErrorCode.WORKSPACE_DELETE_NOT_ALLOWED
 
 
-@pytest.mark.asyncio
-async def test_workspace_apply_patch_context_mismatch_leaves_file_unchanged(tmp_path: Path):
+def test_workspace_apply_patch_context_mismatch_leaves_file_unchanged(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
-    prepared = await service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task"))
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task")))
     repo_dir = manager.repo_dir(prepared.workspace_id)
     patch = "*** Begin Patch\n*** Update File: README.md\n@@\n-missing\n+after\n*** End Patch\n"
 
     with pytest.raises(ApiError) as exc:
-        await service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch))
+        run(service.apply_patch("acme", "demo", prepared.workspace_id, WorkspaceApplyPatchRequest(patch=patch)))
     assert exc.value.error_code == ErrorCode.WORKSPACE_PATCH_CONTEXT_MISMATCH
     assert (repo_dir / "README.md").read_text(encoding="utf-8") == "before\n"
 
 
-@pytest.mark.asyncio
-async def test_workspace_write_file_create_only_and_sha_guard(tmp_path: Path):
+def test_workspace_write_file_create_only_and_sha_guard(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
-    prepared = await service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task"))
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task")))
     repo_dir = manager.repo_dir(prepared.workspace_id)
     original_remote_head = git("rev-parse", "gpt/task", cwd=remote)
 
-    dry = await service.write_file(
-        "acme",
-        "demo",
-        prepared.workspace_id,
-        WorkspaceWriteFileRequest(path="docs/ci.md", content="# CI\n", dry_run=True),
+    dry = run(
+        service.write_file(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            WorkspaceWriteFileRequest(path="docs/ci.md", content="# CI\n", dry_run=True),
+        )
     )
     assert dry.written is False
     assert not (repo_dir / "docs/ci.md").exists()
 
-    written = await service.write_file(
-        "acme",
-        "demo",
-        prepared.workspace_id,
-        WorkspaceWriteFileRequest(path="docs/ci.md", content="# CI\n", line_ending="lf"),
+    written = run(
+        service.write_file(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            WorkspaceWriteFileRequest(path="docs/ci.md", content="# CI\n", line_ending="lf"),
+        )
     )
     assert written.written is True
     assert written.operation == "added"
@@ -166,25 +213,26 @@ async def test_workspace_write_file_create_only_and_sha_guard(tmp_path: Path):
     assert git("rev-parse", "gpt/task", cwd=remote) == original_remote_head
 
     with pytest.raises(ApiError) as exc:
-        await service.write_file("acme", "demo", prepared.workspace_id, WorkspaceWriteFileRequest(path="docs/ci.md", content="again\n"))
+        run(service.write_file("acme", "demo", prepared.workspace_id, WorkspaceWriteFileRequest(path="docs/ci.md", content="again\n")))
     assert exc.value.error_code == ErrorCode.WORKSPACE_FILE_EXISTS
 
     with pytest.raises(ApiError) as exc:
-        await service.write_file(
-            "acme",
-            "demo",
-            prepared.workspace_id,
-            WorkspaceWriteFileRequest(path="docs/ci.md", content="again\n", mode="overwrite_if_sha256_matches", expected_sha256="0" * 64),
+        run(
+            service.write_file(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                WorkspaceWriteFileRequest(path="docs/ci.md", content="again\n", mode="overwrite_if_sha256_matches", expected_sha256="0" * 64),
+            )
         )
     assert exc.value.error_code == ErrorCode.WORKSPACE_SHA_MISMATCH
 
 
-@pytest.mark.asyncio
-async def test_workspace_write_file_rejects_sensitive_path(tmp_path: Path):
+def test_workspace_write_file_rejects_sensitive_path(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
-    prepared = await service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task"))
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task")))
 
     with pytest.raises(ApiError) as exc:
-        await service.write_file("acme", "demo", prepared.workspace_id, WorkspaceWriteFileRequest(path=".env", content="SECRET=x\n"))
+        run(service.write_file("acme", "demo", prepared.workspace_id, WorkspaceWriteFileRequest(path=".env", content="SECRET=x\n")))
     assert exc.value.error_code == ErrorCode.WORKSPACE_POLICY_VIOLATION

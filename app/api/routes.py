@@ -45,6 +45,9 @@ from app.models.pulls import (
     UpdatePullRequestResponse,
 )
 from app.models.workspaces import (
+    PrepareWorkspaceFromMirrorRequest,
+    PrepareWorkspaceMirrorRequest,
+    PrepareWorkspaceMirrorResponse,
     PrepareWorkspaceRequest,
     PrepareWorkspaceResponse,
     WorkspaceApplyPatchRequest,
@@ -104,6 +107,34 @@ async def prepare_workspace(
     audit: Annotated[AuditStore, Depends(audit_store)],
 ) -> PrepareWorkspaceResponse:
     return await WorkspaceService(github, pol, settings, manager, audit).prepare(owner, repo, request)
+
+
+@router.post("/workspaces/prepare-mirror", operation_id="prepareWorkspaceMirror", summary="Prepare or refresh the backend Git mirror", response_model=PrepareWorkspaceMirrorResponse)
+async def prepare_workspace_mirror(
+    owner: str,
+    repo: str,
+    request: PrepareWorkspaceMirrorRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> PrepareWorkspaceMirrorResponse:
+    return await WorkspaceService(github, pol, settings, manager, audit).prepare_mirror(owner, repo, request)
+
+
+@router.post("/workspaces/prepare-from-mirror", operation_id="prepareWorkspaceFromMirror", summary="Prepare a backend Git workspace from an existing mirror", response_model=PrepareWorkspaceResponse)
+async def prepare_workspace_from_mirror(
+    owner: str,
+    repo: str,
+    request: PrepareWorkspaceFromMirrorRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> PrepareWorkspaceResponse:
+    return await WorkspaceService(github, pol, settings, manager, audit).prepare_from_mirror(owner, repo, request)
 
 
 @router.post("/workspaces/{workspace_id}/exec-pwsh", operation_id="workspaceExecPwsh", summary="Run controlled PowerShell in a workspace", response_model=WorkspaceExecPwshResponse)

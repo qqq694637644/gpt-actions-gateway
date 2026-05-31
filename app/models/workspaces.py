@@ -11,9 +11,31 @@ class PrepareWorkspaceRequest(IdempotentRequest):
     branch: str | None = Field(default=None, description="gpt/* branch to prepare for read/write maintenance.")
     source_pr_number: int | None = Field(default=None, ge=1, description="Prepare from this PR head branch.")
     base_ref: str | None = Field(default=None, description="Read-only base branch/ref for investigation.")
-    workspace_id: str | None = Field(default=None, min_length=3, max_length=80)
+    workspace_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^ws_[A-Za-z0-9_-]+$")
     refresh: bool = True
     clean: bool = False
+
+
+class PrepareWorkspaceFromMirrorRequest(IdempotentRequest):
+    branch: str | None = Field(default=None, description="gpt/* branch to prepare for read/write maintenance.")
+    source_pr_number: int | None = Field(default=None, ge=1, description="Prepare from this PR head branch.")
+    base_ref: str | None = Field(default=None, description="Read-only base branch/ref for investigation.")
+    workspace_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^ws_[A-Za-z0-9_-]+$")
+    clean: bool = False
+
+
+class PrepareWorkspaceMirrorRequest(IdempotentRequest):
+    refresh: bool = True
+
+
+class WorkspacePrepareDiagnostics(GatewayBaseModel):
+    mirror_stage: Literal["clone", "fetch", "reuse", "skip"]
+    mirror_duration_ms: int
+    mirror_pack_bytes: int
+    mirror_pack_files: int
+    workspace_stage: Literal["clone", "reuse", "skip"]
+    workspace_duration_ms: int
+    total_duration_ms: int
 
 
 class PrepareWorkspaceResponse(GatewayBaseModel):
@@ -28,6 +50,14 @@ class PrepareWorkspaceResponse(GatewayBaseModel):
     changed_files: list[ChangedFile]
     created: bool
     refreshed: bool
+    diagnostics: WorkspacePrepareDiagnostics
+
+
+class PrepareWorkspaceMirrorResponse(GatewayBaseModel):
+    owner: str
+    repo: str
+    refreshed: bool
+    diagnostics: WorkspacePrepareDiagnostics
 
 
 class WorkspaceExecPwshRequest(GatewayBaseModel):

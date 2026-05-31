@@ -1,5 +1,6 @@
 from app.config.settings import Settings
 from app.models.branches import CreateWorkBranchRequest
+from app.models.workspaces import PrepareWorkspaceRequest
 
 
 def test_removed_settings_are_not_present(tmp_path):
@@ -24,3 +25,10 @@ def test_create_work_branch_request_has_no_legacy_aliases():
     properties = schema["properties"]
     assert "base_branch" not in properties
     assert "source_pr_number" not in properties
+
+
+def test_prepare_workspace_request_workspace_id_schema_requires_ws_prefix():
+    schema = PrepareWorkspaceRequest.model_json_schema()
+    workspace_id = schema["properties"]["workspace_id"]
+    string_branch = next(item for item in workspace_id["anyOf"] if item.get("type") == "string")
+    assert string_branch["pattern"] == "^ws_[A-Za-z0-9_-]+$"

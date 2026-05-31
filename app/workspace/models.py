@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.common import ChangedFile
 
 
 class WorkspaceMeta(BaseModel):
@@ -46,3 +49,25 @@ class CommandResult(BaseModel):
     truncated: bool = False
     timed_out: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class MirrorPrepareStats:
+    stage: str
+    duration_ms: int
+    pack_bytes: int
+    pack_files: int
+    refreshed: bool
+
+
+@dataclass(slots=True)
+class WorkspacePrepareStats:
+    meta: WorkspaceMeta
+    created: bool
+    refreshed: bool
+    changed_files: list[ChangedFile]
+    dirty: bool
+    mirror: MirrorPrepareStats
+    workspace_stage: str
+    workspace_duration_ms: int
+    total_duration_ms: int

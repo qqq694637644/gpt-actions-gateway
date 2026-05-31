@@ -15,6 +15,8 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 ### Workspace
 
 - `prepareWorkspace`
+- `prepareWorkspaceMirror`
+- `prepareWorkspaceFromMirror`
 - `workspaceExecPwsh`
 - `workspaceStatus`
 - `workspaceDiff`
@@ -105,6 +107,26 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare" \
     "refresh": true,
     "clean": false,
     "idempotency_key": "task-fix-ci-prepare"
+  }'
+```
+
+For large repositories, split mirror prewarming from workspace preparation:
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare-mirror" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh": true}'
+```
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare-from-mirror" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "branch": "gpt/fix-ci-20260531-ab12cd",
+    "clean": false,
+    "workspace_id": "ws_abc123"
   }'
 ```
 
