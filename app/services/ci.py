@@ -92,8 +92,11 @@ class CIService:
             target_sha = await self.github.get_branch_head(owner, repo, branch)
             matched_by = "branch"
             warning = "Branch query was resolved to current branch head SHA."
+        elif request.workflow_id and request.created_after:
+            matched_by = "workflow_id"
+            warning = "Workflow query was matched by workflow_id and created_after without pinning a branch or commit SHA."
         else:
-            raise ApiError(ErrorCode.VALIDATION_ERROR, "Provide commit_sha, pr_number, or branch.", status_code=422)
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Provide commit_sha, pr_number, branch, or workflow_id with created_after.", status_code=422)
 
         params: dict[str, Any] = {"per_page": 100}
         if target_sha:
@@ -114,7 +117,7 @@ class CIService:
                 ErrorCode.CI_RUN_NOT_FOUND,
                 "No matching workflow runs were found.",
                 status_code=404,
-                suggestion="Check that CI has started for the commit, or query again with the exact commit_sha.",
+                suggestion="Check that CI has started, or query again with the exact commit_sha, branch, or workflow dispatch query_hint.",
                 details={"commit_sha": target_sha, "branch": branch, "workflow_id": request.workflow_id, "event": request.event},
             )
 
@@ -227,7 +230,10 @@ class CIService:
         matched = await self._match_caches_for_delete(owner, repo, request)
         matched_count = len(matched)
         if matched_count == 0:
-            response = DeleteCacheResponse(deleted=False, dry_run=request.dry_run, matched_count=0, deleted_count=0, deleted_caches=[], warning="No cache matched the selector.")
+            warning = "No cache matched the selector."
+            if request.cache_id is not None:
+                warning = "No cache matched cache_id in the enumerated cache list; no cache was deleted."
+            response = DeleteCacheResponse(deleted=False, dry_run=request.dry_run, matched_count=0, deleted_count=0, deleted_caches=[], warning=warning)
             self._record_cache_delete_audit(owner, repo, request, response)
             if request.idempotency_key and self.audit:
                 self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
@@ -426,7 +432,7 @@ class CIService:
             for item in payload.get("actions_caches", []):
                 if int(item.get("id", 0)) == request.cache_id:
                     return [self._cache_from_github(item)]
-            return [ActionCache(cache_id=request.cache_id)]
+            return []
 
         key = self._validate_cache_delete_key(request.key or "")
         params: dict[str, Any] = {"per_page": 100, "key": key, "sort": "last_accessed_at", "direction": "desc"}

@@ -160,7 +160,7 @@ class DeleteCacheRequest(IdempotentRequest):
     cache_id: int | None = Field(default=None, ge=1)
     key: str | None = Field(default=None, max_length=512)
     ref: str | None = Field(default=None, max_length=300)
-    dry_run: bool = False
+    dry_run: bool = True
     max_delete: int = Field(default=1, ge=1, le=100)
 
     @model_validator(mode="after")

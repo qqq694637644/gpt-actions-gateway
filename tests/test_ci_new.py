@@ -9,6 +9,7 @@ import pytest
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.models.ci import (
+    CIStatusQueryRequest,
     DeleteCacheRequest,
     DispatchWorkflowRequest,
     GetCiJobsRequest,
@@ -73,6 +74,32 @@ class CIGitHubStub:
                     "conclusion": "success",
                     "html_url": "https://github.test/job/10",
                     "steps": [{"name": "compile", "number": 1, "status": "completed", "conclusion": "success"}],
+                }
+            ]
+        }
+
+    async def list_workflow_runs(self, owner: str, repo: str, *, workflow_id: str | None = None, params: dict | None = None) -> dict:
+        assert workflow_id == "ci.yml"
+        assert params is not None
+        assert params.get("event") == "workflow_dispatch"
+        assert "created" in params
+        assert "branch" not in params
+        assert "head_sha" not in params
+        return {
+            "workflow_runs": [
+                {
+                    "id": 88,
+                    "run_attempt": 1,
+                    "workflow_id": workflow_id,
+                    "name": "CI",
+                    "event": "workflow_dispatch",
+                    "head_branch": None,
+                    "head_sha": "3333333333333333333333333333333333333333",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.test/run/88",
+                    "created_at": "2026-05-30T00:00:00Z",
+                    "updated_at": "2026-05-30T00:01:00Z",
                 }
             ]
         }
@@ -175,7 +202,7 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     artifact_text = asyncio.run(service.read_artifact_text("acme", "demo", ReadArtifactTextRequest(artifact_id=55)))
     caches = asyncio.run(service.list_caches("acme", "demo", ListCachesRequest(key="ce-lib-")))
     dry_run = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101, dry_run=True)))
-    delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix")))
+    delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False)))
 
     assert dispatch.accepted is True
     assert dispatch.event == "workflow_dispatch"
@@ -189,6 +216,35 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     assert caches.caches[0].key == "ce-lib-windows-x64"
     assert dry_run.deleted is False and dry_run.matched_count == 1
     assert delete.deleted is True and github.deleted_caches == [101]
+
+
+def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
+    github = CIGitHubStub()
+    service = make_service(github)
+
+    dispatch = asyncio.run(service.dispatch_workflow("acme", "demo", DispatchWorkflowRequest(workflow_id="ci.yml", ref="refs/tags/v1.0.0")))
+    status = asyncio.run(service.get_ci_status("acme", "demo", CIStatusQueryRequest(**dispatch.query_hint)))
+
+    assert "branch" not in dispatch.query_hint
+    assert "commit_sha" not in dispatch.query_hint
+    assert dispatch.query_hint["workflow_id"] == "ci.yml"
+    assert status.matched_by == "workflow_id"
+    assert status.conclusion == "success"
+
+
+def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -> None:
+    github = CIGitHubStub()
+    service = make_service(github)
+
+    default_dry_run = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101)))
+    missing = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=999, dry_run=False)))
+
+    assert default_dry_run.dry_run is True
+    assert default_dry_run.deleted is False
+    assert github.deleted_caches == []
+    assert missing.matched_count == 0
+    assert missing.deleted_caches == []
+    assert github.deleted_caches == []
 
 
 def test_delete_cache_rejects_short_or_broad_keys() -> None:
