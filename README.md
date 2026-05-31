@@ -16,10 +16,27 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 | POST | `/repos/{owner}/{repo}/files/read` | `getFile` | 读取单个文件，超限截断，二进制不返回正文 |
 | POST | `/repos/{owner}/{repo}/files/read-range` | `getFileRange` | 读取指定行范围 |
 | POST | `/repos/{owner}/{repo}/files/read-many` | `getFiles` | 一次读取多个文件，限制总大小 |
-| POST | `/repos/{owner}/{repo}/branches/create-work-branch` | `createWorkBranch` | 从白名单 base 创建 `gpt/*` 工作分支，支持幂等 |
+| POST | `/repos/{owner}/{repo}/code/search` | `searchCode` | 在指定 ref 上按文本搜索代码 |
+| POST | `/repos/{owner}/{repo}/snapshots/export` | `exportRepoSnapshot` | 导出仓库快照元数据，可选附带 base64 压缩包 |
+| POST | `/repos/{owner}/{repo}/branches/create-work-branch` | `createWorkBranch` | 从 `base_ref` / `base_sha` / `source_pr_number` 创建或继续 `gpt/*` 工作分支 |
+| POST | `/repos/{owner}/{repo}/branches/continue-work-branch` | `continueWorkBranch` | 继续一个已存在的 `gpt/*` 工作分支 |
+| POST | `/repos/{owner}/{repo}/branches/list` | `listBranches` | 列出仓库分支 |
+| POST | `/repos/{owner}/{repo}/branches/get` | `getBranch` | 获取单个分支详情 |
+| POST | `/repos/{owner}/{repo}/branches/protection/get` | `getBranchProtection` | 获取分支保护信息 |
 | POST | `/repos/{owner}/{repo}/commits/commit-files` | `commitFiles` | Git Database API 多文件提交，要求 `expected_head_sha`，`force=false` |
+| POST | `/repos/{owner}/{repo}/commits/apply-patch` | `applyPatchAndCommit` | 应用 `git diff / unified diff` 并提交，支持文本 patch、mode change、GIT binary patch |
+| POST | `/repos/{owner}/{repo}/compare` | `compareRefs` | 比较两个 ref 的差异 |
 | POST | `/repos/{owner}/{repo}/pulls/create` | `createPullRequest` | 创建 PR；若同 head/base 已有 open PR，则返回已有 PR |
+| POST | `/repos/{owner}/{repo}/pulls/get` | `getPullRequest` | 获取单个 PR 详情 |
+| POST | `/repos/{owner}/{repo}/pulls/list` | `listPullRequests` | 列出 PR |
+| POST | `/repos/{owner}/{repo}/pulls/files` | `getPullRequestFiles` | 列出 PR 变更文件 |
+| POST | `/repos/{owner}/{repo}/pulls/update` | `updatePullRequest` | 更新 PR 标题、正文、状态或 base 分支 |
+| POST | `/repos/{owner}/{repo}/pulls/comment` | `commentPullRequest` | 给 PR 发表评论 |
+| POST | `/repos/{owner}/{repo}/pulls/request-reviewers` | `requestReviewers` | 请求 reviewer |
+| POST | `/repos/{owner}/{repo}/issues/labels/add` | `addLabels` | 给 PR 对应 issue 添加标签 |
 | POST | `/repos/{owner}/{repo}/pulls/merge` | `mergePullRequest` | 默认关闭；开启后仅允许 merge `gpt/*` 头分支且目标分支在白名单中的 PR |
+| POST | `/repos/{owner}/{repo}/metadata/get` | `getRepository` | 获取仓库元数据 |
+| POST | `/repos/{owner}/{repo}/metadata/default-branch` | `getDefaultBranch` | 获取默认分支 |
 | POST | `/repos/{owner}/{repo}/ci/status/query` | `queryCiStatus` | 通过 JSON body 按 commit / PR / branch 查询并整理 GitHub Actions 状态 |
 | POST | `/repos/{owner}/{repo}/ci/failed-log/query` | `queryFailedCiLog` | 通过 JSON body 下载失败 job 日志并提取关键片段 |
 | POST | `/repos/{owner}/{repo}/ci/runs/get` | `getCiRun` | 获取单个 workflow run；可选附带 jobs |
@@ -41,6 +58,7 @@ Custom GPT Actions → FastAPI Gateway → GitHub REST API → GitHub Actions
 - 写入分支必须以 `WRITE_BRANCH_PREFIX` 开头，默认 `gpt/`。
 - `commitFiles` 必须带 `expected_head_sha`；提交前检查分支 head，更新 ref 时 `force=false`。
 - 支持 `previous_sha`，可对单文件做更细粒度的并发保护。
+- `applyPatchAndCommit` 支持 `modified`、`added`、`deleted`、`renamed`，并支持 blob 文件的 mode change 与 `GIT binary patch`。
 - 默认禁止删除文件、修改 `.github/workflows/*`、写入密钥类文件、写入二进制/压缩/构建产物。
 - CI 查询优先按 `commit_sha`/PR head SHA 精确匹配；branch 查询会先解析当前 head SHA，避免拿到旧 run。
 - CI rerun 默认关闭；开启后还要求 GitHub token 有 Actions: Write。
@@ -188,6 +206,34 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/commits/commit-files" \
     ]
   }'
 ```
+
+### 应用 patch 并提交
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/commits/apply-patch" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "branch": "gpt/fix-windows-ci-20260530-ab12cd",
+    "expected_head_sha": "1111111111111111111111111111111111111111",
+    "commit_message": "Apply generated patch",
+    "patch": "diff --git a/src/main.cpp b/src/main.cpp\nindex e69de29..8c84f6f 100644\n--- a/src/main.cpp\n+++ b/src/main.cpp\n@@ -1,0 +1,5 @@\n+#include <iostream>\n+\n+int main() {\n+    std::cout << \\\"Hello\\\" << std::endl;\n+}\n"
+  }'
+```
+
+当前 `applyPatchAndCommit` 支持：
+
+- `modified`
+- `added`
+- `deleted`
+- `renamed`
+- blob 文件的 mode change：`100644`、`100755`、`120000`
+- `GIT binary patch`：支持 `literal` 和 `delta`
+
+说明：
+
+- `160000` 这类 submodule 模式不在这个接口支持范围内。
+- `dry_run=true` 时只校验并在内存中应用 patch，不会真的创建 commit。
 
 ### 合并 PR
 

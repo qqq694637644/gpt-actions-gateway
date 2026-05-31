@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import re
+import zlib
 from dataclasses import dataclass, field
 
 from app.config.settings import Settings
@@ -13,6 +15,9 @@ from app.storage.audit import AuditStore
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _DIFF_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)\s*$")
+_MODE_RE = re.compile(r"^(?:old mode|new mode|new file mode|deleted file mode) (\d{6})$")
+_INDEX_MODE_RE = re.compile(r"^index [0-9a-fA-F]+\.\.[0-9a-fA-F]+(?: (\d{6}))?$")
+_SUPPORTED_BLOB_MODES = {"100644", "100755", "120000"}
 
 
 @dataclass
@@ -25,6 +30,13 @@ class PatchHunk:
 
 
 @dataclass
+class BinaryPatchBlock:
+    kind: str
+    size: int
+    lines: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ParsedPatchFile:
     old_path: str
     new_path: str
@@ -33,6 +45,9 @@ class ParsedPatchFile:
     additions: int = 0
     deletions: int = 0
     binary: bool = False
+    old_mode: str | None = None
+    new_mode: str | None = None
+    binary_forward: BinaryPatchBlock | None = None
 
     @property
     def result_path(self) -> str:
@@ -169,8 +184,6 @@ class CommitService:
         total_bytes = 0
         seen_paths: set[str] = set()
         for file_patch in parsed_files:
-            if file_patch.binary:
-                raise ApiError(ErrorCode.BINARY_FILE_NOT_ALLOWED, "Binary patches are not supported.", status_code=403, details={"path": file_patch.result_path})
             entries, changed, output_bytes = await self._tree_entries_for_patch_file(owner, repo, tree_map, file_patch)
             for entry in entries:
                 path = entry["path"]
@@ -227,46 +240,52 @@ class CommitService:
     ) -> tuple[list[dict], PatchChangedFile, int]:
         entries: list[dict] = []
         previous_path = None
-        output_text = ""
+        output_bytes = 0
 
         if file_patch.operation == "added":
             new_path = self.policy.assert_write_path_allowed(file_patch.new_path, operation="upsert")
-            output_text = apply_hunks("", file_patch.hunks, file_patch.new_path)
-            self._assert_text_safe(new_path, output_text)
-            entries.append({"path": new_path, "mode": "100644", "type": "blob", "content": output_text})
+            new_mode = _resolve_new_mode(file_patch, None)
+            new_bytes = await self._build_output_bytes(owner, repo, file_patch, None, new_path)
+            entries.append(await self._build_blob_tree_entry(owner, repo, new_path, new_mode, new_bytes, previous_sha=None, previous_bytes=None))
+            output_bytes = len(new_bytes)
             result_path = new_path
         elif file_patch.operation == "deleted":
             old_path = self.policy.assert_write_path_allowed(file_patch.old_path, operation="delete")
-            if old_path not in tree_map:
+            old_entry = tree_map.get(old_path)
+            if old_entry is None:
                 raise ApiError(ErrorCode.PATH_NOT_ALLOWED, "Patch deletes a file that does not exist at the branch head.", status_code=422, details={"path": old_path})
-            if file_patch.hunks:
-                old_text = await self._read_existing_text(owner, repo, old_path, tree_map[old_path]["sha"])
-                apply_hunks(old_text, file_patch.hunks, old_path)
-            entries.append({"path": old_path, "mode": "100644", "type": "blob", "sha": None})
+            new_bytes = await self._build_output_bytes(owner, repo, file_patch, old_entry, old_path)
+            if new_bytes:
+                raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary or text delete patch must result in empty content.", status_code=422, details={"path": old_path})
+            entries.append({"path": old_path, "mode": old_entry.get("mode") or file_patch.old_mode or "100644", "type": "blob", "sha": None})
+            output_bytes = 0
             result_path = old_path
         elif file_patch.operation == "renamed":
             old_path = self.policy.assert_write_path_allowed(file_patch.old_path, operation="delete")
             new_path = self.policy.assert_write_path_allowed(file_patch.new_path, operation="upsert")
-            if old_path not in tree_map:
+            old_entry = tree_map.get(old_path)
+            if old_entry is None:
                 raise ApiError(ErrorCode.PATH_NOT_ALLOWED, "Patch renames a file that does not exist at the branch head.", status_code=422, details={"path": old_path})
-            old_text = await self._read_existing_text(owner, repo, old_path, tree_map[old_path]["sha"])
-            output_text = apply_hunks(old_text, file_patch.hunks, new_path) if file_patch.hunks else old_text
-            self._assert_text_safe(new_path, output_text)
-            entries.append({"path": old_path, "mode": "100644", "type": "blob", "sha": None})
-            entries.append({"path": new_path, "mode": "100644", "type": "blob", "content": output_text})
+            old_bytes = await self._read_existing_bytes(owner, repo, old_path, old_entry["sha"])
+            new_mode = _resolve_new_mode(file_patch, old_entry.get("mode"))
+            new_bytes = await self._build_output_bytes(owner, repo, file_patch, old_entry, new_path)
+            entries.append({"path": old_path, "mode": old_entry.get("mode") or file_patch.old_mode or "100644", "type": "blob", "sha": None})
+            entries.append(await self._build_blob_tree_entry(owner, repo, new_path, new_mode, new_bytes, previous_sha=old_entry.get("sha"), previous_bytes=old_bytes))
             previous_path = old_path
+            output_bytes = len(new_bytes) if new_bytes != old_bytes else 0
             result_path = new_path
         else:
             path = self.policy.assert_write_path_allowed(file_patch.new_path, operation="upsert")
-            if path not in tree_map:
+            old_entry = tree_map.get(path)
+            if old_entry is None:
                 raise ApiError(ErrorCode.PATH_NOT_ALLOWED, "Patch modifies a file that does not exist at the branch head.", status_code=422, details={"path": path})
-            old_text = await self._read_existing_text(owner, repo, path, tree_map[path]["sha"])
-            output_text = apply_hunks(old_text, file_patch.hunks, path)
-            self._assert_text_safe(path, output_text)
-            entries.append({"path": path, "mode": "100644", "type": "blob", "content": output_text})
+            old_bytes = await self._read_existing_bytes(owner, repo, path, old_entry["sha"])
+            new_mode = _resolve_new_mode(file_patch, old_entry.get("mode"))
+            new_bytes = await self._build_output_bytes(owner, repo, file_patch, old_entry, path)
+            entries.append(await self._build_blob_tree_entry(owner, repo, path, new_mode, new_bytes, previous_sha=old_entry.get("sha"), previous_bytes=old_bytes))
+            output_bytes = len(new_bytes) if new_bytes != old_bytes else 0
             result_path = path
 
-        output_bytes = len(output_text.encode("utf-8")) if file_patch.operation != "deleted" else 0
         changed = PatchChangedFile(
             path=result_path,
             operation=file_patch.operation,  # type: ignore[arg-type]
@@ -276,11 +295,45 @@ class CommitService:
         )
         return entries, changed, output_bytes
 
-    async def _read_existing_text(self, owner: str, repo: str, path: str, sha: str) -> str:
-        data = await self.github.get_blob(owner, repo, sha)
-        if self.policy.has_binary_extension(path) or self.policy.looks_binary(data):
-            raise ApiError(ErrorCode.BINARY_FILE_NOT_ALLOWED, "Patch target is binary-looking and cannot be modified.", status_code=403, details={"path": path})
-        return data.decode("utf-8", errors="replace")
+    async def _build_output_bytes(self, owner: str, repo: str, file_patch: ParsedPatchFile, old_entry: dict | None, path: str) -> bytes:
+        old_bytes = b""
+        if old_entry is not None:
+            old_bytes = await self._read_existing_bytes(owner, repo, file_patch.old_path, old_entry["sha"])
+        if file_patch.binary:
+            return _apply_binary_patch_block(file_patch, old_bytes)
+        old_text = old_bytes.decode("utf-8", errors="replace")
+        if file_patch.operation == "added":
+            old_text = ""
+        output_text = apply_hunks(old_text, file_patch.hunks, path) if file_patch.hunks else old_text
+        self._assert_text_safe(path, output_text)
+        return output_text.encode("utf-8")
+
+    async def _build_blob_tree_entry(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        mode: str,
+        content: bytes,
+        *,
+        previous_sha: str | None,
+        previous_bytes: bytes | None,
+    ) -> dict:
+        _assert_supported_mode(mode, path)
+        if previous_sha and previous_bytes == content:
+            return {"path": path, "mode": mode, "type": "blob", "sha": previous_sha}
+        if mode != "120000" and not self.policy.looks_binary(content):
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+            if text is not None:
+                return {"path": path, "mode": mode, "type": "blob", "content": text}
+        blob = await self.github.create_blob(owner, repo, content)
+        return {"path": path, "mode": mode, "type": "blob", "sha": blob["sha"]}
+
+    async def _read_existing_bytes(self, owner: str, repo: str, path: str, sha: str) -> bytes:
+        return await self.github.get_blob(owner, repo, sha)
 
     def _assert_text_safe(self, path: str, text: str) -> None:
         encoded = text.encode("utf-8")
@@ -347,24 +400,44 @@ def _parse_file_section(old_path: str, new_path: str, section: list[str]) -> Par
     operation = "modified"
     hunks: list[PatchHunk] = []
     binary = False
+    old_mode: str | None = None
+    new_mode: str | None = None
     rename_from: str | None = None
     rename_to: str | None = None
     additions = 0
     deletions = 0
     current_hunk: PatchHunk | None = None
+    binary_forward: BinaryPatchBlock | None = None
 
-    for raw_line in section:
+    i = 0
+    while i < len(section):
+        raw_line = section[i]
         line = raw_line.rstrip("\n")
         if line.startswith("new file mode"):
             operation = "added"
+            new_mode = _extract_mode(line)
         elif line.startswith("deleted file mode"):
             operation = "deleted"
+            old_mode = _extract_mode(line)
+        elif line.startswith("old mode"):
+            old_mode = _extract_mode(line)
+        elif line.startswith("new mode"):
+            new_mode = _extract_mode(line)
         elif line.startswith("rename from "):
             rename_from = line[len("rename from ") :]
         elif line.startswith("rename to "):
             rename_to = line[len("rename to ") :]
-        elif line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+        elif line.startswith("index "):
+            index_mode = _extract_index_mode(line)
+            if index_mode:
+                old_mode = old_mode or index_mode
+                new_mode = new_mode or index_mode
+        elif line.startswith("Binary files "):
             binary = True
+        elif line.startswith("GIT binary patch"):
+            binary = True
+            binary_forward, i = _parse_binary_forward_block(section, i + 1)
+            continue
         elif line.startswith("--- "):
             marker = line[4:].strip()
             if marker == "/dev/null":
@@ -394,12 +467,205 @@ def _parse_file_section(old_path: str, new_path: str, section: list[str]) -> Par
             elif raw_line.startswith("-") and not raw_line.startswith("---"):
                 deletions += 1
             current_hunk.lines.append(raw_line)
+        i += 1
 
     if rename_from and rename_to:
         operation = "renamed"
         old_path = rename_from
         new_path = rename_to
-    return ParsedPatchFile(old_path=old_path, new_path=new_path, operation=operation, hunks=hunks, additions=additions, deletions=deletions, binary=binary)
+    return ParsedPatchFile(
+        old_path=old_path,
+        new_path=new_path,
+        operation=operation,
+        hunks=hunks,
+        additions=additions,
+        deletions=deletions,
+        binary=binary,
+        old_mode=old_mode,
+        new_mode=new_mode,
+        binary_forward=binary_forward,
+    )
+
+
+def _extract_mode(line: str) -> str:
+    match = _MODE_RE.match(line)
+    if not match:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, "Unsupported mode header format.", status_code=422, details={"header": line})
+    return match.group(1)
+
+
+def _extract_index_mode(line: str) -> str | None:
+    match = _INDEX_MODE_RE.match(line)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _parse_binary_forward_block(section: list[str], start_index: int) -> tuple[BinaryPatchBlock, int]:
+    i = start_index
+    while i < len(section) and not section[i].strip():
+        i += 1
+    if i >= len(section):
+        raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary patch is missing its forward block.", status_code=422)
+    header = section[i].strip()
+    parts = header.split()
+    if len(parts) != 2 or parts[0] not in {"literal", "delta"}:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, "Unsupported binary patch block header.", status_code=422, details={"header": header})
+    try:
+        size = int(parts[1])
+    except ValueError as exc:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary patch size is invalid.", status_code=422, details={"header": header}) from exc
+    i += 1
+    lines: list[str] = []
+    while i < len(section):
+        current = section[i].rstrip("\n")
+        if not current:
+            break
+        lines.append(current)
+        i += 1
+    return BinaryPatchBlock(kind=parts[0], size=size, lines=lines), i
+
+
+def _resolve_new_mode(file_patch: ParsedPatchFile, current_mode: str | None) -> str:
+    mode = file_patch.new_mode or current_mode or "100644"
+    _assert_supported_mode(mode, file_patch.result_path)
+    return mode
+
+
+def _assert_supported_mode(mode: str, path: str) -> None:
+    if mode not in _SUPPORTED_BLOB_MODES:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "Unsupported file mode in patch.",
+            status_code=422,
+            details={"path": path, "mode": mode, "supported_modes": sorted(_SUPPORTED_BLOB_MODES)},
+        )
+
+
+def _apply_binary_patch_block(file_patch: ParsedPatchFile, old_bytes: bytes) -> bytes:
+    block = file_patch.binary_forward
+    if block is None:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary patch is missing its forward payload.", status_code=422, details={"path": file_patch.result_path})
+    decoded = _decode_git_binary_payload(block.lines)
+    if block.kind == "literal":
+        try:
+            result = zlib.decompress(decoded)
+        except zlib.error as exc:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary patch literal payload could not be decompressed.", status_code=422, details={"path": file_patch.result_path}) from exc
+    elif block.kind == "delta":
+        try:
+            delta = zlib.decompress(decoded)
+        except zlib.error as exc:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary patch delta payload could not be decompressed.", status_code=422, details={"path": file_patch.result_path}) from exc
+        result = _apply_git_delta(old_bytes, delta, file_patch.result_path)
+    else:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, "Unsupported binary patch block kind.", status_code=422, details={"path": file_patch.result_path, "kind": block.kind})
+    if len(result) != block.size:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "Binary patch output size does not match its declared size.",
+            status_code=422,
+            details={"path": file_patch.result_path, "declared_size": block.size, "actual_size": len(result)},
+        )
+    return result
+
+
+def _decode_git_binary_payload(lines: list[str]) -> bytes:
+    chunks = bytearray()
+    for line in lines:
+        if not line:
+            continue
+        expected = _decode_git_binary_line_length(line[0])
+        payload = line[1:]
+        try:
+            chunk = base64.b85decode(payload.encode("ascii"))
+        except ValueError as exc:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary patch line contains invalid base85 data.", status_code=422, details={"line": line[:120]}) from exc
+        if len(chunk) < expected:
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                "Binary patch line length prefix exceeds decoded payload size.",
+                status_code=422,
+                details={"line": line[:120], "expected_bytes": expected, "actual_bytes": len(chunk)},
+            )
+        chunks.extend(chunk[:expected])
+    return bytes(chunks)
+
+
+def _decode_git_binary_line_length(prefix: str) -> int:
+    if "A" <= prefix <= "Z":
+        return ord(prefix) - ord("A") + 1
+    if "a" <= prefix <= "z":
+        return ord(prefix) - ord("a") + 27
+    raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary patch line prefix is invalid.", status_code=422, details={"prefix": prefix})
+
+
+def _read_git_delta_size(data: bytes, offset: int) -> tuple[int, int]:
+    shift = 0
+    size = 0
+    while True:
+        if offset >= len(data):
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary delta payload ended unexpectedly while reading size.", status_code=422)
+        byte = data[offset]
+        offset += 1
+        size |= (byte & 0x7F) << shift
+        if not (byte & 0x80):
+            return size, offset
+        shift += 7
+
+
+def _apply_git_delta(source: bytes, delta: bytes, path: str) -> bytes:
+    source_size, offset = _read_git_delta_size(delta, 0)
+    if source_size != len(source):
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "Binary delta source size does not match the current blob.",
+            status_code=409,
+            suggestion="Read the latest branch head and regenerate the patch from the current file content.",
+            details={"path": path, "expected_source_size": source_size, "actual_source_size": len(source)},
+        )
+    target_size, offset = _read_git_delta_size(delta, offset)
+    output = bytearray()
+    while offset < len(delta):
+        command = delta[offset]
+        offset += 1
+        if command & 0x80:
+            copy_offset = 0
+            copy_size = 0
+            for shift, mask in enumerate((0x01, 0x02, 0x04, 0x08)):
+                if command & mask:
+                    if offset >= len(delta):
+                        raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary delta copy command is truncated.", status_code=422, details={"path": path})
+                    copy_offset |= delta[offset] << (shift * 8)
+                    offset += 1
+            for shift, mask in enumerate((0x10, 0x20, 0x40)):
+                if command & mask:
+                    if offset >= len(delta):
+                        raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary delta copy size is truncated.", status_code=422, details={"path": path})
+                    copy_size |= delta[offset] << (shift * 8)
+                    offset += 1
+            if copy_size == 0:
+                copy_size = 0x10000
+            end = copy_offset + copy_size
+            if end > len(source):
+                raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary delta copy command exceeds source blob size.", status_code=422, details={"path": path})
+            output.extend(source[copy_offset:end])
+            continue
+        if command == 0:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary delta contains an invalid zero-length command.", status_code=422, details={"path": path})
+        end = offset + command
+        if end > len(delta):
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "Binary delta insert command is truncated.", status_code=422, details={"path": path})
+        output.extend(delta[offset:end])
+        offset = end
+    if len(output) != target_size:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "Binary delta output size does not match its declared target size.",
+            status_code=422,
+            details={"path": path, "declared_target_size": target_size, "actual_size": len(output)},
+        )
+    return bytes(output)
 
 
 def apply_hunks(old_text: str, hunks: list[PatchHunk], path: str) -> str:

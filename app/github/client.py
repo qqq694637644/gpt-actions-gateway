@@ -146,6 +146,13 @@ class GitHubClient:
             payload["base_tree"] = base_tree
         return await self._request("POST", f"/repos/{owner}/{repo}/git/trees", json=payload)
 
+    async def create_blob(self, owner: str, repo: str, content: bytes) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/blobs",
+            json={"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
+        )
+
     async def create_commit(self, owner: str, repo: str, message: str, tree_sha: str, parents: list[str]) -> dict[str, Any]:
         return await self._request(
             "POST",
