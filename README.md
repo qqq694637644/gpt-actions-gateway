@@ -35,6 +35,7 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 - `listPullRequests`
 - `getPullRequestFiles`
 - `updatePullRequest`
+- `mergePullRequest`
 - `commentPullRequest`
 
 ### CI, logs, and artifacts
@@ -57,7 +58,7 @@ APP_ENV=production
 PUBLIC_BASE_URL=https://gateway.example.com
 GPT_ACTION_SECRET=replace-with-a-long-random-secret
 GITHUB_AUTH_MODE=pat
-GITHUB_TOKEN=github_pat_xxx
+GITHUB_TOKEN=replace-with-your-github-token
 ALLOWED_REPOS=owner/project-a
 WORKSPACE_SHELL=pwsh
 ```
@@ -201,7 +202,23 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/create" \
   }'
 ```
 
-### 7. Query CI and logs
+### 7. Merge the PR
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/merge" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pr_number": 10,
+    "merge_method": "squash",
+    "commit_title": "Fix CI setup",
+    "commit_message": "Merge PR #10"
+  }'
+```
+
+The gateway only merges open, non-draft PRs whose head branch is still a `gpt/*` work branch and whose base branch is allowed by policy.
+
+### 8. Query CI and logs
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/status/query" \

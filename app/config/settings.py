@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     github_api_version: str = "2026-03-10"
     github_use_env_proxy: bool = False
     github_token: str | None = None
+    github_git_username: str | None = None
     github_app_id: str | None = None
     github_app_private_key: str | None = None
     github_installation_id: str | None = None

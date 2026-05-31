@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
 from app.models.pulls import (
     CommentPullRequestRequest,
@@ -10,6 +11,8 @@ from app.models.pulls import (
     GetPullRequestResponse,
     ListPullRequestsRequest,
     ListPullRequestsResponse,
+    MergePullRequestRequest,
+    MergePullRequestResponse,
     PullRequestFile,
     PullRequestFilesRequest,
     PullRequestFilesResponse,
@@ -73,6 +76,39 @@ class PullRequestService:
             self.policy.assert_base_branch_allowed(request.base_branch)
         pr = await self.github.update_pull_request(owner, repo, request.pr_number, title=request.title, body=request.body, state=request.state, base=request.base_branch)
         return UpdatePullRequestResponse(pull_request=self._info(pr))
+
+    async def merge_pull_request(self, owner: str, repo: str, request: MergePullRequestRequest) -> MergePullRequestResponse:
+        self.policy.assert_repo_allowed(owner, repo)
+        pr = await self.github.get_pull_request(owner, repo, request.pr_number)
+        info = self._info(pr)
+        self.policy.assert_write_branch_allowed(info.head_branch)
+        self.policy.assert_base_branch_allowed(info.base_branch)
+        if info.merged:
+            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is already merged.", status_code=409, details={"pr_number": request.pr_number})
+        if info.state != "open":
+            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is not open.", status_code=409, details={"pr_number": request.pr_number, "state": info.state})
+        if info.draft:
+            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Draft pull requests cannot be merged.", status_code=409, details={"pr_number": request.pr_number})
+        if info.mergeable is False:
+            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is not mergeable.", status_code=409, details={"pr_number": request.pr_number})
+
+        merged = await self.github.merge_pull_request(
+            owner,
+            repo,
+            request.pr_number,
+            commit_title=request.commit_title,
+            commit_message=request.commit_message,
+            sha=request.expected_head_sha,
+            merge_method=request.merge_method,
+        )
+        updated = await self.github.get_pull_request(owner, repo, request.pr_number)
+        return MergePullRequestResponse(
+            pr_number=request.pr_number,
+            merged=bool(merged.get("merged")),
+            message=merged.get("message", ""),
+            commit_sha=merged.get("sha"),
+            pull_request=self._info(updated),
+        )
 
     async def comment_pull_request(self, owner: str, repo: str, request: CommentPullRequestRequest) -> CommentPullRequestResponse:
         self.policy.assert_repo_allowed(owner, repo)

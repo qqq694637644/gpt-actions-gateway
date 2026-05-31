@@ -17,17 +17,33 @@ class InstallationToken:
     expires_at_epoch: float
 
 
+@dataclass
+class GitCredentials:
+    username: str
+    password: str
+
+
 class GitHubAuthProvider:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._installation_token: InstallationToken | None = None
 
-    async def get_token(self, client: httpx.AsyncClient) -> str:
+    async def get_api_token(self, client: httpx.AsyncClient) -> str:
         if self.settings.github_auth_mode == "pat":
             if not self.settings.github_token:
                 raise ApiError(ErrorCode.GITHUB_AUTH_FAILED, "GITHUB_TOKEN is required when GITHUB_AUTH_MODE=pat.", status_code=500)
             return self.settings.github_token
         return await self._get_github_app_installation_token(client)
+
+    async def get_git_credentials(self, client: httpx.AsyncClient) -> GitCredentials:
+        if self.settings.github_auth_mode == "pat":
+            if not self.settings.github_token:
+                raise ApiError(ErrorCode.GITHUB_AUTH_FAILED, "GITHUB_TOKEN is required when GITHUB_AUTH_MODE=pat.", status_code=500)
+            if not self.settings.github_git_username:
+                raise ApiError(ErrorCode.GITHUB_AUTH_FAILED, "GITHUB_GIT_USERNAME is required when GITHUB_AUTH_MODE=pat.", status_code=500)
+            return GitCredentials(username=self.settings.github_git_username, password=self.settings.github_token)
+        token = await self._get_github_app_installation_token(client)
+        return GitCredentials(username="x-access-token", password=token)
 
     async def _get_github_app_installation_token(self, client: httpx.AsyncClient) -> str:
         if self._installation_token and self._installation_token.expires_at_epoch - time.time() > 60:

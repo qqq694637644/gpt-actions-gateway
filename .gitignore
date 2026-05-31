@@ -43,3 +43,4 @@ audit.db
 
 # 生成文件
 openapi.json
+.env.example

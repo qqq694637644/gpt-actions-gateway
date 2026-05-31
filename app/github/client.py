@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -29,8 +30,8 @@ class GitHubClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def get_token(self) -> str:
-        return await self._auth.get_token(self._client)
+    async def get_api_token(self) -> str:
+        return await self._auth.get_api_token(self._client)
 
     def git_remote_url(self, owner: str, repo: str) -> str:
         parsed = urlparse(self.settings.github_api_base_url)
@@ -43,14 +44,17 @@ class GitHubClient:
         return f"{host_base}/{owner}/{repo}.git"
 
     async def git_auth_config(self) -> list[str]:
-        token = await self.get_token()
+        credentials = await self._auth.get_git_credentials(self._client)
+        basic_token = base64.b64encode(f"{credentials.username}:{credentials.password}".encode("utf-8")).decode("ascii")
         return [
             "-c",
-            f"http.extraHeader=Authorization: Bearer {token}",
+            f"http.extraHeader=Authorization: Basic {basic_token}",
             "-c",
             "credential.helper=",
             "-c",
             "core.askPass=",
+            "-c",
+            "credential.interactive=never",
         ]
 
     async def _request(
@@ -65,7 +69,7 @@ class GitHubClient:
         raw_bytes: bool = False,
         headers: dict[str, str] | None = None,
     ) -> Any:
-        token = await self.get_token()
+        token = await self.get_api_token()
         request_headers = {"Authorization": f"Bearer {token}"}
         if headers:
             request_headers.update(headers)
@@ -107,7 +111,7 @@ class GitHubClient:
             raise ApiError(ErrorCode.GITHUB_AUTH_FAILED, "GitHub authentication or permission failed.", status_code=502, details=details)
         if status == 404:
             raise ApiError(ErrorCode.GITHUB_NOT_FOUND, "GitHub resource was not found.", status_code=404, details=details)
-        if status == 409:
+        if status in (405, 409):
             raise ApiError(ErrorCode.GITHUB_CONFLICT, "GitHub reported a conflict.", status_code=409, details=details)
         if status in (410, 425):
             raise ApiError(ErrorCode.CI_LOG_NOT_READY, "GitHub Actions log is not ready or no longer available.", status_code=404, details=details)
@@ -179,6 +183,29 @@ class GitHubClient:
     ) -> dict[str, Any]:
         payload = {k: v for k, v in {"title": title, "body": body, "state": state, "base": base}.items() if v is not None}
         return await self._request("PATCH", f"/repos/{owner}/{repo}/pulls/{pr_number}", json=payload)
+
+    async def merge_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        *,
+        commit_title: str | None = None,
+        commit_message: str | None = None,
+        sha: str | None = None,
+        merge_method: str = "merge",
+    ) -> dict[str, Any]:
+        payload = {
+            key: value
+            for key, value in {
+                "commit_title": commit_title,
+                "commit_message": commit_message,
+                "sha": sha,
+                "merge_method": merge_method,
+            }.items()
+            if value is not None
+        }
+        return await self._request("PUT", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", json=payload)
 
     async def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> dict[str, Any]:
         return await self._request("POST", f"/repos/{owner}/{repo}/issues/{issue_number}/comments", json={"body": body})

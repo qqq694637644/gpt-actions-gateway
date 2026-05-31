@@ -23,7 +23,6 @@ def test_removed_operation_ids_are_absent():
         "getBranchProtection",
         "getRepository",
         "getDefaultBranch",
-        "mergePullRequest",
         "dispatchWorkflow",
         "rerunWorkflowRun",
         "rerunFailedJobs",

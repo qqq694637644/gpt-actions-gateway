@@ -5,7 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.api.routes import router as gateway_router
 from app.config.settings import get_settings
@@ -70,6 +70,28 @@ def create_app() -> FastAPI:
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> JSONResponse:
         return JSONResponse({"ok": True, "env": settings.app_env, "version": "2.0.0"})
+
+    @app.get("/privacy", include_in_schema=False)
+    async def privacy() -> HTMLResponse:
+        return HTMLResponse(
+            """
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>隐私政策</title>
+  </head>
+  <body>
+    <main>
+      <h1>隐私政策</h1>
+      <p>这是一个占位页面，用于外部平台填写隐私政策地址。</p>
+      <p>当前版本未收集额外个人信息；正式发布前请替换为真实隐私政策内容。</p>
+    </main>
+  </body>
+</html>
+""".strip()
+        )
 
     return app
 

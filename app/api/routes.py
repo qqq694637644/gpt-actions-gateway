@@ -37,6 +37,8 @@ from app.models.pulls import (
     GetPullRequestResponse,
     ListPullRequestsRequest,
     ListPullRequestsResponse,
+    MergePullRequestRequest,
+    MergePullRequestResponse,
     PullRequestFilesRequest,
     PullRequestFilesResponse,
     UpdatePullRequestRequest,
@@ -258,6 +260,11 @@ async def get_pull_request_files(owner: str, repo: str, request: PullRequestFile
 @router.post("/pulls/update", operation_id="updatePullRequest", summary="Update pull request title/body/state/base", response_model=UpdatePullRequestResponse)
 async def update_pull_request(owner: str, repo: str, request: UpdatePullRequestRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> UpdatePullRequestResponse:
     return await PullRequestService(github, pol).update_pull_request(owner, repo, request)
+
+
+@router.post("/pulls/merge", operation_id="mergePullRequest", summary="Merge a pull request", response_model=MergePullRequestResponse)
+async def merge_pull_request(owner: str, repo: str, request: MergePullRequestRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> MergePullRequestResponse:
+    return await PullRequestService(github, pol).merge_pull_request(owner, repo, request)
 
 
 @router.post("/pulls/comment", operation_id="commentPullRequest", summary="Comment on a pull request", response_model=CommentPullRequestResponse)

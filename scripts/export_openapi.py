@@ -23,6 +23,7 @@ PUBLIC_OPERATION_IDS = {
     "listPullRequests",
     "getPullRequestFiles",
     "updatePullRequest",
+    "mergePullRequest",
     "commentPullRequest",
     "queryCiStatus",
     "queryFailedCiLog",
