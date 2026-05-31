@@ -227,13 +227,17 @@ class CIService:
             if cached:
                 return DeleteCacheResponse(**cached)
 
+        if request.cache_id is not None:
+            response = await self._delete_cache_by_id(owner, repo, request)
+            self._record_cache_delete_audit(owner, repo, request, response)
+            if request.idempotency_key and self.audit:
+                self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
+            return response
+
         matched = await self._match_caches_for_delete(owner, repo, request)
         matched_count = len(matched)
         if matched_count == 0:
-            warning = "No cache matched the selector."
-            if request.cache_id is not None:
-                warning = "No cache matched cache_id in the enumerated cache list; no cache was deleted."
-            response = DeleteCacheResponse(deleted=False, dry_run=request.dry_run, matched_count=0, deleted_count=0, deleted_caches=[], warning=warning)
+            response = DeleteCacheResponse(deleted=False, dry_run=request.dry_run, matched_count=0, deleted_count=0, deleted_caches=[], warning="No cache matched the selector.")
             self._record_cache_delete_audit(owner, repo, request, response)
             if request.idempotency_key and self.audit:
                 self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
@@ -427,13 +431,6 @@ class CIService:
         return f"refs/heads/{normalized}"
 
     async def _match_caches_for_delete(self, owner: str, repo: str, request: DeleteCacheRequest) -> list[ActionCache]:
-        if request.cache_id is not None:
-            payload = await self.github.list_actions_caches(owner, repo, params={"per_page": 100})
-            for item in payload.get("actions_caches", []):
-                if int(item.get("id", 0)) == request.cache_id:
-                    return [self._cache_from_github(item)]
-            return []
-
         key = self._validate_cache_delete_key(request.key or "")
         params: dict[str, Any] = {"per_page": 100, "key": key, "sort": "last_accessed_at", "direction": "desc"}
         if request.ref:
@@ -450,6 +447,60 @@ class CIService:
                 details={"total_count": total_count, "enumerated_count": len(raw_items)},
             )
         return [self._cache_from_github(item) for item in raw_items]
+
+    async def _delete_cache_by_id(self, owner: str, repo: str, request: DeleteCacheRequest) -> DeleteCacheResponse:
+        cache_id = request.cache_id
+        if cache_id is None:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, "cache_id is required for cache-id deletion.", status_code=422)
+
+        cache, lookup_warning = await self._find_cache_by_id(owner, repo, cache_id)
+        if request.dry_run:
+            return DeleteCacheResponse(
+                deleted=False,
+                dry_run=True,
+                matched_count=1 if cache else 0,
+                deleted_count=0,
+                deleted_caches=[cache] if cache else [],
+                warning=lookup_warning or "Dry run only; no cache was deleted.",
+            )
+
+        try:
+            await self.github.delete_actions_cache(owner, repo, cache_id)
+        except ApiError as exc:
+            if exc.error_code == ErrorCode.GITHUB_NOT_FOUND:
+                return DeleteCacheResponse(
+                    deleted=False,
+                    dry_run=False,
+                    matched_count=0,
+                    deleted_count=0,
+                    deleted_caches=[],
+                    warning="GitHub reported that the cache_id was not found; no cache was deleted.",
+                )
+            raise
+
+        return DeleteCacheResponse(
+            deleted=True,
+            dry_run=False,
+            matched_count=1,
+            deleted_count=1,
+            deleted_caches=[cache or ActionCache(cache_id=cache_id)],
+            warning=lookup_warning,
+        )
+
+    async def _find_cache_by_id(self, owner: str, repo: str, cache_id: int) -> tuple[ActionCache | None, str | None]:
+        page = 1
+        scanned = 0
+        while True:
+            payload = await self.github.list_actions_caches(owner, repo, params={"per_page": 100, "page": page})
+            raw_items = payload.get("actions_caches", [])
+            for item in raw_items:
+                if int(item.get("id", 0)) == cache_id:
+                    return self._cache_from_github(item), None
+            scanned += len(raw_items)
+            total_count = int(payload.get("total_count") or scanned)
+            if not raw_items or scanned >= total_count:
+                return None, "Cache metadata was not found while enumerating Actions caches; actual deletion by cache_id still uses GitHub's exact DELETE endpoint."
+            page += 1
 
     @staticmethod
     def _validate_cache_delete_key(key: str) -> str:

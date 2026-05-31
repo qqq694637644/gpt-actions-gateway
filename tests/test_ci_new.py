@@ -166,6 +166,8 @@ class CIGitHubStub:
         return {"total_count": len(caches), "actions_caches": caches}
 
     async def delete_actions_cache(self, owner: str, repo: str, cache_id: int) -> None:
+        if cache_id == 999:
+            raise ApiError(ErrorCode.GITHUB_NOT_FOUND, "not found", status_code=404)
         self.deleted_caches.append(cache_id)
 
 
@@ -245,6 +247,12 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
     assert missing.matched_count == 0
     assert missing.deleted_caches == []
     assert github.deleted_caches == []
+
+    direct_delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=202, dry_run=False)))
+
+    assert direct_delete.deleted is True
+    assert direct_delete.deleted_caches[0].cache_id == 202
+    assert github.deleted_caches == [202]
 
 
 def test_delete_cache_rejects_short_or_broad_keys() -> None:
