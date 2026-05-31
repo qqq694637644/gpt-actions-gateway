@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     max_log_bytes: int = 80_000
     max_log_lines: int = 500
     max_blob_read_bytes: int = 2 * 1024 * 1024
+    max_snapshot_bytes: int = 50 * 1024 * 1024
+    max_search_file_bytes: int = 200 * 1024
 
     allow_workflow_edit: bool = False
     allow_delete_files: bool = False
@@ -97,6 +99,8 @@ class Settings(BaseSettings):
         "max_total_commit_size",
         "max_log_bytes",
         "max_blob_read_bytes",
+        "max_snapshot_bytes",
+        "max_search_file_bytes",
         mode="before",
     )
     @classmethod

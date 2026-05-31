@@ -18,6 +18,9 @@ class ChangedFile(GatewayBaseModel):
     operation: str
     previous_sha: str | None = None
     new_sha: str | None = None
+    additions: int | None = None
+    deletions: int | None = None
+    previous_filename: str | None = None
 
 
 class ErrorExample(BaseModel):

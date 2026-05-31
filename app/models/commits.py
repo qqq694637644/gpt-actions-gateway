@@ -56,3 +56,32 @@ class CommitFilesResponse(GatewayBaseModel):
     new_head_sha: str
     changed_files: list[ChangedFile]
     commit_url: str
+
+
+class PatchChangedFile(GatewayBaseModel):
+    path: str
+    operation: Literal["added", "modified", "deleted", "renamed"]
+    previous_path: str | None = None
+    additions: int = 0
+    deletions: int = 0
+
+
+class ApplyPatchAndCommitRequest(IdempotentRequest):
+    branch: str
+    expected_head_sha: str = Field(min_length=7)
+    patch: str = Field(min_length=1, description="Unified diff / git diff text.")
+    commit_message: str = Field(min_length=1, max_length=300)
+    dry_run: bool = Field(default=False, description="Validate and apply the patch in memory without creating a commit.")
+
+
+class ApplyPatchAndCommitResponse(GatewayBaseModel):
+    commit_sha: str | None = None
+    previous_head_sha: str
+    new_head_sha: str
+    changed_files: list[PatchChangedFile]
+    commit_url: str | None = None
+    dry_run: bool = False
+
+
+# Backward-compatible alias used by earlier gateway tests/clients.
+ApplyPatchRequest = ApplyPatchAndCommitRequest
