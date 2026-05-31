@@ -5,10 +5,14 @@ from scripts.export_openapi import PUBLIC_OPERATION_IDS, collect_operation_ids
 def test_openapi_contains_only_v2_operation_ids():
     schema = app.openapi()
     assert collect_operation_ids(schema) == PUBLIC_OPERATION_IDS
+    assert len(PUBLIC_OPERATION_IDS) == 29
 
 
-def test_removed_operation_ids_are_absent():
-    removed = {
+def test_hidden_and_removed_operation_ids_are_absent():
+    hidden_or_removed = {
+        "prepareWorkspaceMirror",
+        "prepareWorkspaceFromMirror",
+        "continueWorkBranch",
         "listTree",
         "exportRepoSnapshot",
         "applyPatchAndCommit",
@@ -23,11 +27,9 @@ def test_removed_operation_ids_are_absent():
         "getBranchProtection",
         "getRepository",
         "getDefaultBranch",
-        "dispatchWorkflow",
-        "rerunWorkflowRun",
         "rerunFailedJobs",
         "rerunJob",
         "getCiJob",
     }
     schema = app.openapi()
-    assert collect_operation_ids(schema).isdisjoint(removed)
+    assert collect_operation_ids(schema).isdisjoint(hidden_or_removed)

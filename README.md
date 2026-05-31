@@ -15,8 +15,6 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 ### Workspace
 
 - `prepareWorkspace`
-- `prepareWorkspaceMirror`
-- `prepareWorkspaceFromMirror`
 - `workspaceExecPwsh`
 - `workspaceStatus`
 - `workspaceDiff`
@@ -28,7 +26,6 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 ### Branch
 
 - `createWorkBranch`
-- `continueWorkBranch`
 
 ### Pull Request
 
@@ -43,13 +40,18 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 ### CI, logs, and artifacts
 
 - `queryCiStatus`
+- `dispatchWorkflow`
 - `queryFailedCiLog`
 - `getCiRun`
+- `rerunWorkflowRun`
 - `getCiJobs`
+- `rerunWorkflowJob`
 - `getJobLog`
 - `getRunLog`
 - `listArtifacts`
 - `readArtifactText`
+- `listCaches`
+- `deleteCache`
 
 ## Configuration
 
@@ -84,7 +86,7 @@ WORKSPACE_GIT_USER_EMAIL=gpt-actions-gateway@users.noreply.github.com
 
 ## Standard workflow
 
-### 1. Create or continue a work branch
+### 1. Create a work branch
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/branches/create-work-branch" \
@@ -107,26 +109,6 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare" \
     "refresh": true,
     "clean": false,
     "idempotency_key": "task-fix-ci-prepare"
-  }'
-```
-
-For large repositories, split mirror prewarming from workspace preparation:
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare-mirror" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"refresh": true}'
-```
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare-from-mirror" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "branch": "gpt/fix-ci-20260531-ab12cd",
-    "clean": false,
-    "workspace_id": "ws_abc123"
   }'
 ```
 
@@ -250,6 +232,59 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/status/query" \
 ```
 
 When CI fails, call `queryFailedCiLog`, then drill into job logs, run logs, or text artifacts. Use `workspaceExecPwsh` again to fix code in the same workspace and publish the next commit through `workspaceCommitAndPush`.
+
+To trigger a `workflow_dispatch` workflow without creating an empty commit, call `dispatchWorkflow` and then query by the returned `query_hint`:
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/workflows/dispatch" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "pascal-ci.yml",
+    "ref": "gpt/fix-ci-20260531-ab12cd",
+    "inputs": {"force_rebuild": "true"},
+    "idempotency_key": "task-fix-ci-dispatch-1"
+  }'
+```
+
+To rerun CI after runner, network, or cache flakiness, use `rerunWorkflowRun` for the whole run or `rerunWorkflowJob` for one failed job:
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/runs/rerun" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"run_id": 123456789, "enable_debug_logging": false}'
+```
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/jobs/rerun" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"job_id": 987654321, "enable_debug_logging": false}'
+```
+
+To inspect and safely clear GitHub Actions caches, list matching caches first, dry run the delete, then delete by `cache_id`:
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/list" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "ce-lib-", "ref": "refs/heads/gpt/fix-ci-20260531-ab12cd"}'
+```
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/delete" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"cache_id": 12345, "dry_run": true}'
+```
+
+```bash
+curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/delete" \
+  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"cache_id": 12345, "dry_run": false, "idempotency_key": "task-delete-cache-12345"}'
+```
 
 ## Security model
 

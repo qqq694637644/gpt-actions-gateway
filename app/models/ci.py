@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from app.models.common import GatewayBaseModel
+from app.models.common import GatewayBaseModel, IdempotentRequest
 
 
 class CIStep(GatewayBaseModel):
@@ -87,6 +87,96 @@ class GetCiJobsResponse(GatewayBaseModel):
     run_attempt: int | None = None
     jobs: list[CIJob]
     total_count: int
+
+
+class DispatchWorkflowRequest(IdempotentRequest):
+    workflow_id: str = Field(min_length=1, max_length=200)
+    ref: str = Field(min_length=1, max_length=300)
+    inputs: dict[str, Any] | None = None
+
+
+class DispatchWorkflowResponse(GatewayBaseModel):
+    workflow_id: str
+    ref: str
+    accepted: bool
+    event: Literal["workflow_dispatch"] = "workflow_dispatch"
+    created_after: str
+    query_hint: dict[str, Any]
+    warning: str | None = "GitHub workflow dispatch accepts the request but does not return the new run_id directly."
+
+
+class RerunWorkflowRunRequest(IdempotentRequest):
+    run_id: int = Field(ge=1)
+    enable_debug_logging: bool = False
+
+
+class RerunWorkflowRunResponse(GatewayBaseModel):
+    run_id: int
+    accepted: bool
+    status: Literal["accepted", "queued"] | str = "accepted"
+    query_hint: dict[str, Any]
+    warning: str | None = "GitHub rerun APIs may not expose the new attempt immediately."
+
+
+class RerunWorkflowJobRequest(IdempotentRequest):
+    job_id: int = Field(ge=1)
+    enable_debug_logging: bool = False
+
+
+class RerunWorkflowJobResponse(GatewayBaseModel):
+    job_id: int
+    accepted: bool
+    status: Literal["accepted", "queued"] | str = "accepted"
+    query_hint: dict[str, Any]
+    warning: str | None = "GitHub may take a few seconds to show the new job attempt."
+
+
+class ActionCache(GatewayBaseModel):
+    cache_id: int
+    key: str | None = None
+    ref: str | None = None
+    version: str | None = None
+    size_in_bytes: int | None = None
+    created_at: str | None = None
+    last_accessed_at: str | None = None
+
+
+class ListCachesRequest(GatewayBaseModel):
+    key: str | None = Field(default=None, max_length=512)
+    ref: str | None = Field(default=None, max_length=300)
+    sort: Literal["last_accessed_at", "created_at", "size_in_bytes"] = "last_accessed_at"
+    direction: Literal["asc", "desc"] = "desc"
+    max_results: int = Field(default=30, ge=1, le=100)
+
+
+class ListCachesResponse(GatewayBaseModel):
+    total_count: int
+    caches: list[ActionCache]
+    truncated: bool = False
+    warning: str | None = None
+
+
+class DeleteCacheRequest(IdempotentRequest):
+    cache_id: int | None = Field(default=None, ge=1)
+    key: str | None = Field(default=None, max_length=512)
+    ref: str | None = Field(default=None, max_length=300)
+    dry_run: bool = True
+    max_delete: int = Field(default=1, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def _require_one_selector(self) -> "DeleteCacheRequest":
+        if (self.cache_id is None) == (not self.key):
+            raise ValueError("Provide exactly one of cache_id or key.")
+        return self
+
+
+class DeleteCacheResponse(GatewayBaseModel):
+    deleted: bool
+    dry_run: bool
+    matched_count: int
+    deleted_count: int
+    deleted_caches: list[ActionCache]
+    warning: str | None = None
 
 
 class FailedLogQueryRequest(GatewayBaseModel):

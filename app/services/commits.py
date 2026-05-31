@@ -71,12 +71,13 @@ class CommitService:
             if cached:
                 return CommitFilesResponse(**cached)
 
-        if len(request.files) > self.settings.max_files_per_commit:
+        max_files = self.settings.workspace_max_changed_files
+        if len(request.files) > max_files:
             raise ApiError(
                 ErrorCode.TOO_MANY_FILES,
                 "Too many files in one commit.",
                 status_code=413,
-                details={"max_files_per_commit": self.settings.max_files_per_commit, "actual_files": len(request.files)},
+                details={"max_files": max_files, "actual_files": len(request.files)},
             )
 
         total_bytes = 0
@@ -101,12 +102,13 @@ class CommitService:
             normalized_changes.append((normalized_path, change))
             changed_files.append(ChangedFile(path=normalized_path, operation=change.operation, previous_sha=change.previous_sha))
 
-        if total_bytes > self.settings.max_total_commit_size:
+        max_bytes = self.settings.workspace_max_write_bytes
+        if total_bytes > max_bytes:
             raise ApiError(
-                ErrorCode.TOTAL_SIZE_TOO_LARGE,
-                "Commit payload exceeds MAX_TOTAL_COMMIT_SIZE.",
+                ErrorCode.FILE_TOO_LARGE,
+                "Commit payload is too large.",
                 status_code=413,
-                details={"actual_bytes": total_bytes, "max_total_commit_size": self.settings.max_total_commit_size},
+                details={"actual_bytes": total_bytes, "max_bytes": max_bytes},
             )
 
         current_head = await self.github.get_branch_head(owner, repo, request.branch)
@@ -157,12 +159,13 @@ class CommitService:
         parsed_files = parse_git_patch(request.patch)
         if not parsed_files:
             raise ApiError(ErrorCode.VALIDATION_ERROR, "Patch does not contain any git diff file sections.", status_code=422)
-        if len(parsed_files) > self.settings.max_files_per_commit:
+        max_files = self.settings.workspace_max_changed_files
+        if len(parsed_files) > max_files:
             raise ApiError(
                 ErrorCode.TOO_MANY_FILES,
                 "Patch changes too many files in one commit.",
                 status_code=413,
-                details={"max_files_per_commit": self.settings.max_files_per_commit, "actual_files": len(parsed_files)},
+                details={"max_files": max_files, "actual_files": len(parsed_files)},
             )
 
         current_head = await self.github.get_branch_head(owner, repo, request.branch)
@@ -194,12 +197,13 @@ class CommitService:
             total_bytes += output_bytes
             changed_files.append(changed)
 
-        if total_bytes > self.settings.max_total_commit_size:
+        max_bytes = self.settings.workspace_max_write_bytes
+        if total_bytes > max_bytes:
             raise ApiError(
-                ErrorCode.TOTAL_SIZE_TOO_LARGE,
-                "Patched content exceeds MAX_TOTAL_COMMIT_SIZE.",
+                ErrorCode.FILE_TOO_LARGE,
+                "Patched content is too large.",
                 status_code=413,
-                details={"actual_bytes": total_bytes, "max_total_commit_size": self.settings.max_total_commit_size},
+                details={"actual_bytes": total_bytes, "max_bytes": max_bytes},
             )
 
         if request.dry_run:

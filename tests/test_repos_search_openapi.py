@@ -9,6 +9,7 @@ from app.models.search import SearchCodeRequest
 from app.policy.rules import Policy
 from app.services.repos import RepositoryService
 from app.services.search import SearchService
+from scripts.export_openapi import PUBLIC_OPERATION_IDS
 
 HEAD = "1111111111111111111111111111111111111111"
 
@@ -80,7 +81,7 @@ def test_repository_compare_snapshot_and_search() -> None:
     assert search.matches[0].line_number == 2
 
 
-def test_openapi_contains_p0_p1_p2_operation_ids_and_no_validate_patch() -> None:
+def test_openapi_contains_current_public_operation_ids_and_no_legacy_routes() -> None:
     operation_ids = {
         operation.get("operationId")
         for path_item in app.openapi()["paths"].values()
@@ -88,37 +89,7 @@ def test_openapi_contains_p0_p1_p2_operation_ids_and_no_validate_patch() -> None
         if isinstance(operation, dict)
     }
 
-    expected = {
-        "exportRepoSnapshot",
-        "applyPatchAndCommit",
-        "createWorkBranch",
-        "getBranch",
-        "continueWorkBranch",
-        "getPullRequest",
-        "listPullRequests",
-        "getPullRequestFiles",
-        "compareRefs",
-        "getCiRun",
-        "getCiJobs",
-        "getCiJob",
-        "getJobLog",
-        "getRunLog",
-        "dispatchWorkflow",
-        "rerunWorkflowRun",
-        "rerunFailedJobs",
-        "rerunJob",
-        "listArtifacts",
-        "readArtifactText",
-        "getRepository",
-        "getDefaultBranch",
-        "listBranches",
-        "getBranchProtection",
-        "updatePullRequest",
-        "commentPullRequest",
-        "requestReviewers",
-        "addLabels",
-        "searchCode",
-    }
-
-    assert expected <= operation_ids
+    assert operation_ids == PUBLIC_OPERATION_IDS
     assert "validatePatch" not in operation_ids
+    assert "continueWorkBranch" not in operation_ids
+    assert "prepareWorkspaceMirror" not in operation_ids
