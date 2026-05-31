@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import secrets
 import shutil
 import time
@@ -16,6 +15,7 @@ from app.github.client import GitHubClient
 from app.models.common import ChangedFile
 from app.policy.rules import Policy, is_sha
 from app.workspace.git import GitRunner, attach_numstat, normalize_git_paths, parse_numstat, parse_porcelain_z
+from app.workspace.ids import WORKSPACE_ID_RE
 from app.workspace.models import MirrorPrepareStats, WorkspaceMeta, WorkspacePrepareStats, load_meta, save_meta
 
 
@@ -31,7 +31,7 @@ class WorkspaceManager:
         self.mirror_root.mkdir(parents=True, exist_ok=True)
 
     def workspace_dir(self, workspace_id: str) -> Path:
-        if not _WORKSPACE_ID_RE.fullmatch(workspace_id):
+        if not WORKSPACE_ID_RE.fullmatch(workspace_id):
             raise ApiError(ErrorCode.WORKSPACE_NOT_FOUND, "Workspace id is invalid.", status_code=404)
         return self.root / workspace_id
 
@@ -111,6 +111,8 @@ class WorkspaceManager:
         )
 
     async def prepare_mirror(self, owner: str, repo: str, *, refresh: bool) -> MirrorPrepareStats:
+        self.policy.assert_repo_allowed(owner, repo)
+        await self.github.get_repository(owner, repo)
         return await self._ensure_mirror(owner, repo, refresh=refresh)
 
     async def _prepare_workspace(
@@ -488,6 +490,3 @@ def _path_is_selected(path: str, selectors: list[str]) -> bool:
 
 def command_hash(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
-
-
-_WORKSPACE_ID_RE = re.compile(r"^ws_[A-Za-z0-9_-]+$")

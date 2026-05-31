@@ -1,6 +1,7 @@
 from app.config.settings import Settings
 from app.models.branches import CreateWorkBranchRequest
-from app.models.workspaces import PrepareWorkspaceRequest
+from app.models.workspaces import PrepareWorkspaceFromMirrorRequest, PrepareWorkspaceRequest
+from app.workspace.ids import WORKSPACE_ID_PATTERN
 
 
 def test_removed_settings_are_not_present(tmp_path):
@@ -31,4 +32,9 @@ def test_prepare_workspace_request_workspace_id_schema_requires_ws_prefix():
     schema = PrepareWorkspaceRequest.model_json_schema()
     workspace_id = schema["properties"]["workspace_id"]
     string_branch = next(item for item in workspace_id["anyOf"] if item.get("type") == "string")
-    assert string_branch["pattern"] == "^ws_[A-Za-z0-9_-]+$"
+    assert string_branch["pattern"] == WORKSPACE_ID_PATTERN
+
+    mirror_schema = PrepareWorkspaceFromMirrorRequest.model_json_schema()
+    mirror_workspace_id = mirror_schema["properties"]["workspace_id"]
+    mirror_string_branch = next(item for item in mirror_workspace_id["anyOf"] if item.get("type") == "string")
+    assert mirror_string_branch["pattern"] == WORKSPACE_ID_PATTERN

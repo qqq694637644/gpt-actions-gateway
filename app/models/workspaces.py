@@ -5,22 +5,22 @@ from typing import Literal
 from pydantic import Field
 
 from app.models.common import ChangedFile, GatewayBaseModel, IdempotentRequest
+from app.workspace.ids import WORKSPACE_ID_PATTERN
 
 
-class PrepareWorkspaceRequest(IdempotentRequest):
+class PrepareWorkspaceBaseRequest(IdempotentRequest):
     branch: str | None = Field(default=None, description="gpt/* branch to prepare for read/write maintenance.")
     source_pr_number: int | None = Field(default=None, ge=1, description="Prepare from this PR head branch.")
     base_ref: str | None = Field(default=None, description="Read-only base branch/ref for investigation.")
-    workspace_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^ws_[A-Za-z0-9_-]+$")
+    workspace_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=WORKSPACE_ID_PATTERN)
+
+
+class PrepareWorkspaceRequest(PrepareWorkspaceBaseRequest):
     refresh: bool = True
     clean: bool = False
 
 
-class PrepareWorkspaceFromMirrorRequest(IdempotentRequest):
-    branch: str | None = Field(default=None, description="gpt/* branch to prepare for read/write maintenance.")
-    source_pr_number: int | None = Field(default=None, ge=1, description="Prepare from this PR head branch.")
-    base_ref: str | None = Field(default=None, description="Read-only base branch/ref for investigation.")
-    workspace_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^ws_[A-Za-z0-9_-]+$")
+class PrepareWorkspaceFromMirrorRequest(PrepareWorkspaceBaseRequest):
     clean: bool = False
 
 

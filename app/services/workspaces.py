@@ -74,20 +74,7 @@ class WorkspaceService:
             changed_files=[item.model_dump() for item in result.changed_files],
             metadata=self._prepare_metadata(result),
         )
-        return PrepareWorkspaceResponse(
-            workspace_id=result.meta.workspace_id,
-            owner=owner,
-            repo=repo,
-            branch=result.meta.branch,
-            source_pr_number=result.meta.source_pr_number,
-            head_sha=result.meta.head_sha,
-            default_branch=result.meta.default_branch,
-            dirty=result.dirty,
-            changed_files=result.changed_files,
-            created=result.created,
-            refreshed=result.refreshed,
-            diagnostics=self._diagnostics_model(result),
-        )
+        return self._response_from_prepare_result(owner, repo, result)
 
     async def prepare_from_mirror(self, owner: str, repo: str, request: PrepareWorkspaceFromMirrorRequest) -> PrepareWorkspaceResponse:
         result = await self.manager.prepare_from_mirror(
@@ -109,20 +96,7 @@ class WorkspaceService:
             changed_files=[item.model_dump() for item in result.changed_files],
             metadata=self._prepare_metadata(result),
         )
-        return PrepareWorkspaceResponse(
-            workspace_id=result.meta.workspace_id,
-            owner=owner,
-            repo=repo,
-            branch=result.meta.branch,
-            source_pr_number=result.meta.source_pr_number,
-            head_sha=result.meta.head_sha,
-            default_branch=result.meta.default_branch,
-            dirty=result.dirty,
-            changed_files=result.changed_files,
-            created=result.created,
-            refreshed=result.refreshed,
-            diagnostics=self._diagnostics_model(result),
-        )
+        return self._response_from_prepare_result(owner, repo, result)
 
     async def prepare_mirror(self, owner: str, repo: str, request: PrepareWorkspaceMirrorRequest) -> PrepareWorkspaceMirrorResponse:
         result = await self.manager.prepare_mirror(owner, repo, refresh=request.refresh)
@@ -479,6 +453,22 @@ class WorkspaceService:
             workspace_stage=result.workspace_stage,
             workspace_duration_ms=result.workspace_duration_ms,
             total_duration_ms=result.total_duration_ms,
+        )
+
+    def _response_from_prepare_result(self, owner: str, repo: str, result) -> PrepareWorkspaceResponse:
+        return PrepareWorkspaceResponse(
+            workspace_id=result.meta.workspace_id,
+            owner=owner,
+            repo=repo,
+            branch=result.meta.branch,
+            source_pr_number=result.meta.source_pr_number,
+            head_sha=result.meta.head_sha,
+            default_branch=result.meta.default_branch,
+            dirty=result.dirty,
+            changed_files=result.changed_files,
+            created=result.created,
+            refreshed=result.refreshed,
+            diagnostics=self._diagnostics_model(result),
         )
 
     @staticmethod
