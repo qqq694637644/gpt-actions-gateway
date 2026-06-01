@@ -220,7 +220,7 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/merge" \
   }'
 ```
 
-The gateway only merges open, non-draft PRs whose head branch is still a `gpt/*` work branch. PR target/base branches are passed through to GitHub instead of being limited by `BASE_BRANCH_ALLOWLIST`.
+The gateway only merges open, non-draft PRs. PR head and target/base branches are passed through to GitHub instead of being limited by the gateway's write-branch or base-branch allowlists.
 
 ### 8. Query CI and logs
 

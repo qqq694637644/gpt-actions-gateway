@@ -16,16 +16,17 @@ from app.services.pulls import PullRequestService
 
 
 NON_ALLOWLISTED_BASE = "gpt/android-ci-proposal-20260601-1cccff"
+NON_GPT_HEAD = "feature/android-ci-fix"
 
 
-def pr_payload(number: int = 7, *, base_branch: str = "main") -> dict:
+def pr_payload(number: int = 7, *, head_branch: str = "gpt/fix", base_branch: str = "main") -> dict:
     return {
         "number": number,
         "html_url": f"https://github.test/acme/demo/pull/{number}",
         "state": "open",
         "title": "Fix CI",
         "body": "body",
-        "head": {"ref": "gpt/fix", "sha": "2222222222222222222222222222222222222222"},
+        "head": {"ref": head_branch, "sha": "2222222222222222222222222222222222222222"},
         "base": {"ref": base_branch, "sha": "1111111111111111111111111111111111111111"},
         "draft": False,
         "merged": False,
@@ -53,7 +54,7 @@ class PullGitHubStub:
 
     async def create_pull_request(self, owner: str, repo: str, *, head: str, base: str, title: str, body: str | None = None) -> dict:
         self.created = {"head": head, "base": base, "title": title, "body": body}
-        payload = pr_payload(8, base_branch=base)
+        payload = pr_payload(8, head_branch=head, base_branch=base)
         payload["title"] = title
         payload["body"] = body
         return payload
@@ -106,7 +107,7 @@ def test_pull_request_update_and_comment() -> None:
     assert github.comments == ["CI fixed"]
 
 
-def test_pull_request_base_branch_is_not_limited_to_base_allowlist() -> None:
+def test_pull_request_head_and_base_branches_are_not_limited_to_gateway_allowlists() -> None:
     github = PullGitHubStub()
     service = make_service(github)
 
@@ -115,7 +116,7 @@ def test_pull_request_base_branch_is_not_limited_to_base_allowlist() -> None:
             "acme",
             "demo",
             CreatePullRequestRequest(
-                head_branch="gpt/fix",
+                head_branch=NON_GPT_HEAD,
                 base_branch=NON_ALLOWLISTED_BASE,
                 title="Target proposal branch",
                 body="Use a GPT branch as PR base.",
@@ -124,7 +125,13 @@ def test_pull_request_base_branch_is_not_limited_to_base_allowlist() -> None:
     )
     updated = asyncio.run(service.update_pull_request("acme", "demo", UpdatePullRequestRequest(pr_number=7, base_branch=NON_ALLOWLISTED_BASE)))
 
+    assert created.head_branch == NON_GPT_HEAD
     assert created.base_branch == NON_ALLOWLISTED_BASE
-    assert github.created and github.created["base"] == NON_ALLOWLISTED_BASE
+    assert github.created == {
+        "head": NON_GPT_HEAD,
+        "base": NON_ALLOWLISTED_BASE,
+        "title": "Target proposal branch",
+        "body": "Use a GPT branch as PR base.",
+    }
     assert updated.pull_request.base_branch == NON_ALLOWLISTED_BASE
     assert github.updated and github.updated["base"] == NON_ALLOWLISTED_BASE

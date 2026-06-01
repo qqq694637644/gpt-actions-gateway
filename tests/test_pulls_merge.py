@@ -12,6 +12,7 @@ from app.services.pulls import PullRequestService
 
 
 NON_ALLOWLISTED_BASE = "gpt/android-ci-proposal-20260601-1cccff"
+NON_GPT_HEAD = "feature/android-ci-fix"
 
 
 def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True) -> dict:
@@ -21,7 +22,7 @@ def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False
         "state": state,
         "title": "Fix CI",
         "body": "body",
-        "head": {"ref": "gpt/fix-ci", "sha": "2222222222222222222222222222222222222222"},
+        "head": {"ref": NON_GPT_HEAD, "sha": "2222222222222222222222222222222222222222"},
         "base": {"ref": NON_ALLOWLISTED_BASE, "sha": "1111111111111111111111111111111111111111"},
         "draft": draft,
         "merged": merged,
