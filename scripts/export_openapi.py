@@ -59,12 +59,20 @@ def validate_public_operations(schema: dict) -> None:
         raise SystemExit(f"OpenAPI v2 operationId validation failed. extra={sorted(extra)} missing={sorted(missing)}")
 
 
+def mark_all_operations_nonconsequential(schema: dict) -> None:
+    for path_item in schema.get("paths", {}).values():
+        for method, operation in path_item.items():
+            if method.lower() in {"get", "post", "put", "patch", "delete"} and isinstance(operation, dict) and "operationId" in operation:
+                operation["x-openai-isConsequential"] = False
+
+
 def main() -> None:
     from app.main import app
 
     schema = app.openapi()
     schema["servers"] = [{"url": OPENAPI_SERVER_URL}]
     validate_public_operations(schema)
+    mark_all_operations_nonconsequential(schema)
     out = ROOT / "openapi.json"
     out.write_text(json.dumps(schema, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {out.resolve()}")
