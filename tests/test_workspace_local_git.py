@@ -210,6 +210,28 @@ def test_workspace_prepare_from_mirror_checks_out_exact_sha(tmp_path: Path):
     assert prepared.head_sha == expected_sha
 
 
+def test_workspace_prepare_read_only_base_ref_is_not_limited_to_read_allowlist(tmp_path: Path):
+    remote, source = make_local_repo(tmp_path)
+    git("checkout", "main", cwd=source)
+    git("checkout", "-b", "feature/read-only", cwd=source)
+    (source / "README.md").write_text("feature branch\n", encoding="utf-8")
+    git("commit", "-am", "Feature read-only branch", cwd=source)
+    git("push", "origin", "feature/read-only", cwd=source)
+    expected_sha = git("rev-parse", "feature/read-only", cwd=remote)
+    service, _ = make_service(tmp_path, remote)
+
+    prepared = run(
+        service.prepare(
+            "acme",
+            "demo",
+            PrepareWorkspaceRequest(base_ref="feature/read-only", workspace_id="ws_feature_read_only"),
+        )
+    )
+
+    assert prepared.branch == "feature/read-only"
+    assert prepared.head_sha == expected_sha
+
+
 def test_workspace_apply_patch_dry_run_and_apply_do_not_push(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)

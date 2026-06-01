@@ -10,6 +10,8 @@ from app.errors import ApiError, ErrorCode
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _PURPOSE_RE = re.compile(r"[^a-z0-9-]+")
+_REF_CONTROL_OR_SPACE_RE = re.compile(r"[\x00-\x20\x7f]")
+_REF_FORBIDDEN_CHARS = set("~^:?*[\\")
 
 DENY_WRITE_PATTERNS = [
     ".env",
@@ -73,6 +75,26 @@ def branch_matches(branch: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatchcase(branch, pattern) for pattern in patterns)
 
 
+def is_valid_ref_name(value: str | None) -> bool:
+    if not value:
+        return False
+    ref = value.strip()
+    if ref != value:
+        return False
+    if is_sha(ref):
+        return True
+    if ref in {".", "..", "@"}:
+        return False
+    if ref.startswith("/") or ref.endswith("/") or ref.endswith("."):
+        return False
+    if "//" in ref or ".." in ref or "@{" in ref:
+        return False
+    if _REF_CONTROL_OR_SPACE_RE.search(ref) or any(ch in _REF_FORBIDDEN_CHARS for ch in ref):
+        return False
+    parts = ref.split("/")
+    return all(part and not part.startswith(".") and not part.endswith(".lock") for part in parts)
+
+
 def normalize_path(path: str) -> str:
     raw = path.replace("\\", "/").strip()
     if raw == ".":
@@ -110,29 +132,21 @@ class Policy:
                 details={"repo": full_name},
             )
 
-    def assert_read_ref_allowed(self, ref: str) -> None:
-        if is_sha(ref):
-            return
-        if not branch_matches(ref, self.settings.read_branch_patterns):
+    def assert_ref_format_allowed(self, ref: str, *, label: str = "ref") -> None:
+        if not is_valid_ref_name(ref):
             raise ApiError(
-                ErrorCode.BRANCH_NOT_ALLOWED,
-                f"Reading ref {ref!r} is not allowed.",
-                status_code=403,
-                suggestion="Use READ_BRANCH_ALLOWLIST or read by exact commit SHA.",
-                details={"ref": ref, "allowlist": self.settings.read_branch_patterns},
+                ErrorCode.VALIDATION_ERROR,
+                f"Invalid {label} {ref!r}.",
+                status_code=422,
+                suggestion="Use a non-empty branch, tag, ref, or full 40-character commit SHA without whitespace or Git ref metacharacters.",
+                details={"ref": ref},
             )
 
+    def assert_read_ref_allowed(self, ref: str) -> None:
+        self.assert_ref_format_allowed(ref)
+
     def assert_base_branch_allowed(self, branch: str) -> None:
-        if is_sha(branch):
-            return
-        if not branch_matches(branch, self.settings.base_branch_patterns):
-            raise ApiError(
-                ErrorCode.BASE_BRANCH_NOT_ALLOWED,
-                f"Base branch {branch!r} is not allowed.",
-                status_code=403,
-                suggestion="Use a base branch from BASE_BRANCH_ALLOWLIST.",
-                details={"branch": branch, "allowlist": self.settings.base_branch_patterns},
-            )
+        self.assert_ref_format_allowed(branch, label="base branch")
 
     def assert_write_branch_allowed(self, branch: str) -> None:
         forbidden_exact = {"main", "master", "develop"}

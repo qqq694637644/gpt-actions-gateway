@@ -61,8 +61,6 @@ class Settings(BaseSettings):
 
     allowed_repos: str = ""
     allow_all_repos: bool = False
-    read_branch_allowlist: str = "main,master,develop,gpt/*"
-    base_branch_allowlist: str = "main,master,develop"
     write_branch_prefix: str = "gpt/"
     default_base_branch: str = "main"
 
@@ -115,14 +113,6 @@ class Settings(BaseSettings):
     @property
     def allowed_repo_set(self) -> set[str]:
         return {repo.lower() for repo in parse_csv(self.allowed_repos)}
-
-    @property
-    def read_branch_patterns(self) -> list[str]:
-        return parse_csv(self.read_branch_allowlist)
-
-    @property
-    def base_branch_patterns(self) -> list[str]:
-        return parse_csv(self.base_branch_allowlist)
 
     @property
     def excluded_dir_names(self) -> set[str]:

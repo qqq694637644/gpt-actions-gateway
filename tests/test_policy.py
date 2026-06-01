@@ -36,6 +36,20 @@ def test_write_branch_policy() -> None:
         policy.assert_write_branch_allowed("main")
 
 
+def test_read_and_base_refs_are_format_checked_not_allowlisted() -> None:
+    policy = make_policy()
+
+    policy.assert_read_ref_allowed("feature/android-ci-fix")
+    policy.assert_read_ref_allowed("release/2026.06")
+    policy.assert_base_branch_allowed("gpt/android-ci-proposal-20260601-1cccff")
+    policy.assert_base_branch_allowed("1111111111111111111111111111111111111111")
+
+    for ref in ["", " feature/x", "feature x", "feature..x", "feature.lock", "feature@{x", "feature*bad"]:
+        with pytest.raises(ApiError) as exc:
+            policy.assert_read_ref_allowed(ref)
+        assert exc.value.error_code == ErrorCode.VALIDATION_ERROR
+
+
 def test_workflow_edit_blocked_by_default() -> None:
     policy = make_policy()
     with pytest.raises(ApiError) as exc:

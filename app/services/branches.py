@@ -67,7 +67,7 @@ class BranchService:
         if is_sha(base_ref):
             await self.github.get_commit_object(owner, repo, base_ref)
             return base_ref, base_ref
-        self.policy.assert_base_branch_allowed(base_ref)
+        self.policy.assert_read_ref_allowed(base_ref)
         base_sha = await self.github.get_branch_head(owner, repo, base_ref)
         return base_ref, base_sha
 

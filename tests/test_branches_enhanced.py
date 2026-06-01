@@ -10,6 +10,8 @@ from app.services.branches import BranchService
 
 MAIN_SHA = "1111111111111111111111111111111111111111"
 GPT_SHA = "2222222222222222222222222222222222222222"
+FEATURE_SHA = "3333333333333333333333333333333333333333"
+NON_ALLOWLISTED_BASE = "feature/android-ci-fix"
 
 
 class BranchGitHubStub:
@@ -19,6 +21,8 @@ class BranchGitHubStub:
     async def get_branch_head(self, owner: str, repo: str, branch: str) -> str:
         if branch == "gpt/existing":
             return GPT_SHA
+        if branch == NON_ALLOWLISTED_BASE:
+            return FEATURE_SHA
         return MAIN_SHA
 
     async def create_ref(self, owner: str, repo: str, branch: str, sha: str) -> dict:
@@ -50,6 +54,25 @@ def test_create_work_branch_can_continue_existing_named_branch() -> None:
     assert response.base_sha == MAIN_SHA
     assert response.head_sha == GPT_SHA
     assert response.already_exists is True
+
+
+def test_create_work_branch_base_ref_is_not_limited_to_base_allowlist() -> None:
+    github = BranchGitHubStub()
+    settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo")
+    service = BranchService(github, Policy(settings), settings)
+
+    response = asyncio.run(
+        service.create_work_branch(
+            "acme",
+            "demo",
+            CreateWorkBranchRequest(base_ref=NON_ALLOWLISTED_BASE, branch="gpt/from-feature", purpose_slug="fix"),
+        )
+    )
+
+    assert response.base_ref == NON_ALLOWLISTED_BASE
+    assert response.base_sha == FEATURE_SHA
+    assert response.head_sha == FEATURE_SHA
+    assert github.created_refs == [("gpt/from-feature", FEATURE_SHA)]
 
 
 def test_continue_work_branch_is_still_available_as_backend_compatibility() -> None:

@@ -12,6 +12,7 @@ from app.services.search import SearchService
 from scripts.export_openapi import PUBLIC_OPERATION_IDS
 
 HEAD = "1111111111111111111111111111111111111111"
+NON_ALLOWLISTED_REF = "feature/android-ci-fix"
 
 
 class RepoGitHubStub:
@@ -68,9 +69,9 @@ def test_repository_compare_snapshot_and_search() -> None:
 
     repo = asyncio.run(repo_service.get_repository("acme", "demo"))
     default_branch = asyncio.run(repo_service.get_default_branch("acme", "demo"))
-    compare = asyncio.run(repo_service.compare_refs("acme", "demo", CompareRefsRequest(base="main", head="gpt/fix")))
-    snapshot = asyncio.run(repo_service.export_repo_snapshot("acme", "demo", ExportRepoSnapshotRequest(ref="main")))
-    search = asyncio.run(search_service.search_code("acme", "demo", SearchCodeRequest(ref="main", query="needle", extensions=[".py"])))
+    compare = asyncio.run(repo_service.compare_refs("acme", "demo", CompareRefsRequest(base=NON_ALLOWLISTED_REF, head="gpt/fix")))
+    snapshot = asyncio.run(repo_service.export_repo_snapshot("acme", "demo", ExportRepoSnapshotRequest(ref=NON_ALLOWLISTED_REF)))
+    search = asyncio.run(search_service.search_code("acme", "demo", SearchCodeRequest(ref=NON_ALLOWLISTED_REF, query="needle", extensions=[".py"])))
 
     assert repo.full_name == "acme/demo"
     assert default_branch.default_branch == "main"
