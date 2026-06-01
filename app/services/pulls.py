@@ -30,7 +30,7 @@ class PullRequestService:
 
     async def create_pull_request(self, owner: str, repo: str, request: CreatePullRequestRequest) -> CreatePullRequestResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        existing = await self.github.list_pull_requests(owner, repo, head=f"{owner}:{request.head_branch}", base=request.base_branch, state="open", per_page=10)
+        existing = await self.github.list_pull_requests(owner, repo, head=_pr_head_filter(owner, request.head_branch), base=request.base_branch, state="open", per_page=10)
         if existing:
             pr = existing[0]
             return self._create_response(pr, already_exists=True)
@@ -44,7 +44,7 @@ class PullRequestService:
 
     async def list_pull_requests(self, owner: str, repo: str, request: ListPullRequestsRequest) -> ListPullRequestsResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        head = f"{owner}:{request.head_branch}" if request.head_branch else None
+        head = _pr_head_filter(owner, request.head_branch) if request.head_branch else None
         pulls = await self.github.list_pull_requests(owner, repo, head=head, base=request.base_branch, state=request.state, per_page=request.max_results)
         items = [self._info(pr) for pr in pulls[: request.max_results]]
         return ListPullRequestsResponse(pull_requests=items, total_count=len(items))
@@ -142,3 +142,7 @@ class PullRequestService:
             base_branch=info.base_branch,
             already_exists=already_exists,
         )
+
+
+def _pr_head_filter(owner: str, head_branch: str) -> str:
+    return head_branch if ":" in head_branch else f"{owner}:{head_branch}"

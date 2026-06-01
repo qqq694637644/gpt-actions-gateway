@@ -17,6 +17,7 @@ from app.services.pulls import PullRequestService
 
 NON_ALLOWLISTED_BASE = "gpt/android-ci-proposal-20260601-1cccff"
 NON_GPT_HEAD = "feature/android-ci-fix"
+FORK_QUALIFIED_HEAD = "other-owner:feature/android-ci-fix"
 
 
 def pr_payload(number: int = 7, *, head_branch: str = "gpt/fix", base_branch: str = "main") -> dict:
@@ -41,11 +42,13 @@ class PullGitHubStub:
         self.created: dict | None = None
         self.updated: dict | None = None
         self.comments: list[str] = []
+        self.list_calls: list[dict] = []
 
     async def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict:
         return pr_payload(pr_number)
 
     async def list_pull_requests(self, owner: str, repo: str, *, head: str | None = None, base: str | None = None, state: str = "open", per_page: int = 50) -> list[dict]:
+        self.list_calls.append({"head": head, "base": base, "state": state, "per_page": per_page})
         assert state in {"open", "closed", "all"}
         assert per_page >= 1
         if base == NON_ALLOWLISTED_BASE:
@@ -135,3 +138,21 @@ def test_pull_request_head_and_base_branches_are_not_limited_to_gateway_allowlis
     }
     assert updated.pull_request.base_branch == NON_ALLOWLISTED_BASE
     assert github.updated and github.updated["base"] == NON_ALLOWLISTED_BASE
+
+
+def test_fork_qualified_pr_head_is_not_owner_prefixed_for_reuse_or_list_queries() -> None:
+    github = PullGitHubStub()
+    service = make_service(github)
+
+    asyncio.run(
+        service.create_pull_request(
+            "acme",
+            "demo",
+            CreatePullRequestRequest(head_branch=FORK_QUALIFIED_HEAD, base_branch=NON_ALLOWLISTED_BASE, title="Fork PR"),
+        )
+    )
+    asyncio.run(service.list_pull_requests("acme", "demo", ListPullRequestsRequest(head_branch=FORK_QUALIFIED_HEAD, base_branch="main")))
+
+    assert github.list_calls[0]["head"] == FORK_QUALIFIED_HEAD
+    assert github.created and github.created["head"] == FORK_QUALIFIED_HEAD
+    assert github.list_calls[1]["head"] == FORK_QUALIFIED_HEAD

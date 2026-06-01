@@ -399,6 +399,7 @@ class CIService:
             self.policy.assert_read_ref_allowed(branch)
             return branch
         if normalized.startswith("refs/tags/") or normalized.startswith("tags/"):
+            self.policy.assert_ref_format_allowed(normalized)
             tag = normalized.split("/", 2)[-1]
             if not tag or any(ch in tag for ch in "*?[]"):
                 raise ApiError(ErrorCode.VALIDATION_ERROR, "Tag refs must be explicit and cannot contain wildcard characters.", status_code=422)
@@ -423,11 +424,12 @@ class CIService:
         if normalized.startswith("refs/heads/"):
             self.policy.assert_read_ref_allowed(normalized[len("refs/heads/") :])
             return normalized
-        if normalized.startswith("refs/tags/"):
-            tag = normalized[len("refs/tags/") :]
+        if normalized.startswith("refs/tags/") or normalized.startswith("tags/"):
+            self.policy.assert_ref_format_allowed(normalized)
+            tag = normalized.split("/", 2)[-1]
             if not tag or any(ch in tag for ch in "*?[]"):
                 raise ApiError(ErrorCode.VALIDATION_ERROR, "Tag refs must be explicit and cannot contain wildcard characters.", status_code=422)
-            return normalized
+            return normalized if normalized.startswith("refs/tags/") else f"refs/{normalized}"
         self.policy.assert_read_ref_allowed(normalized)
         return f"refs/heads/{normalized}"
 

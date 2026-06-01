@@ -248,6 +248,27 @@ def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
     assert status.conclusion == "success"
 
 
+def test_tag_refs_use_common_ref_format_validation() -> None:
+    service = make_service(CIGitHubStub())
+
+    for ref in ["refs/tags/foo..bar", "refs/tags/.bad", "tags/foo..bar", "tags/.bad"]:
+        with pytest.raises(ApiError) as dispatch_exc:
+            asyncio.run(service.dispatch_workflow("acme", "demo", DispatchWorkflowRequest(workflow_id="ci.yml", ref=ref)))
+        assert dispatch_exc.value.error_code == ErrorCode.VALIDATION_ERROR
+
+        with pytest.raises(ApiError) as cache_exc:
+            asyncio.run(service.list_caches("acme", "demo", ListCachesRequest(ref=ref)))
+        assert cache_exc.value.error_code == ErrorCode.VALIDATION_ERROR
+
+
+def test_short_tag_cache_ref_is_normalized_to_full_tag_ref() -> None:
+    service = make_service(CIGitHubStub())
+
+    params = service._cache_query_params(ListCachesRequest(ref="tags/v1.0.0"))
+
+    assert params["ref"] == "refs/tags/v1.0.0"
+
+
 def test_ci_status_branch_ref_is_resolved_without_double_heads_prefix() -> None:
     github = CIGitHubStub()
     service = make_service(github)
