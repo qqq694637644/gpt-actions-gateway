@@ -1,5 +1,5 @@
 from app.main import app
-from scripts.export_openapi import PUBLIC_OPERATION_IDS, collect_operation_ids
+from scripts.export_openapi import PUBLIC_OPERATION_IDS, collect_operation_ids, mark_all_operations_nonconsequential
 
 
 def test_openapi_contains_only_v2_operation_ids():
@@ -33,3 +33,14 @@ def test_hidden_and_removed_operation_ids_are_absent():
     }
     schema = app.openapi()
     assert collect_operation_ids(schema).isdisjoint(hidden_or_removed)
+
+
+def test_export_marks_all_public_operations_nonconsequential():
+    schema = app.openapi()
+
+    mark_all_operations_nonconsequential(schema)
+
+    for path_item in schema["paths"].values():
+        for method, operation in path_item.items():
+            if method.lower() in {"get", "post", "put", "patch", "delete"} and "operationId" in operation:
+                assert operation["x-openai-isConsequential"] is False
