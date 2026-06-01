@@ -11,6 +11,9 @@ from app.policy.rules import Policy
 from app.services.pulls import PullRequestService
 
 
+NON_ALLOWLISTED_BASE = "gpt/android-ci-proposal-20260601-1cccff"
+
+
 def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True) -> dict:
     return {
         "number": 10,
@@ -19,7 +22,7 @@ def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False
         "title": "Fix CI",
         "body": "body",
         "head": {"ref": "gpt/fix-ci", "sha": "2222222222222222222222222222222222222222"},
-        "base": {"ref": "main", "sha": "1111111111111111111111111111111111111111"},
+        "base": {"ref": NON_ALLOWLISTED_BASE, "sha": "1111111111111111111111111111111111111111"},
         "draft": draft,
         "merged": merged,
         "mergeable": mergeable,

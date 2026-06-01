@@ -5,6 +5,7 @@ import asyncio
 from app.config.settings import Settings
 from app.models.pulls import (
     CommentPullRequestRequest,
+    CreatePullRequestRequest,
     GetPullRequestRequest,
     ListPullRequestsRequest,
     PullRequestFilesRequest,
@@ -14,7 +15,10 @@ from app.policy.rules import Policy
 from app.services.pulls import PullRequestService
 
 
-def pr_payload(number: int = 7) -> dict:
+NON_ALLOWLISTED_BASE = "gpt/android-ci-proposal-20260601-1cccff"
+
+
+def pr_payload(number: int = 7, *, base_branch: str = "main") -> dict:
     return {
         "number": number,
         "html_url": f"https://github.test/acme/demo/pull/{number}",
@@ -22,7 +26,7 @@ def pr_payload(number: int = 7) -> dict:
         "title": "Fix CI",
         "body": "body",
         "head": {"ref": "gpt/fix", "sha": "2222222222222222222222222222222222222222"},
-        "base": {"ref": "main", "sha": "1111111111111111111111111111111111111111"},
+        "base": {"ref": base_branch, "sha": "1111111111111111111111111111111111111111"},
         "draft": False,
         "merged": False,
         "mergeable": True,
@@ -33,6 +37,7 @@ def pr_payload(number: int = 7) -> dict:
 
 class PullGitHubStub:
     def __init__(self) -> None:
+        self.created: dict | None = None
         self.updated: dict | None = None
         self.comments: list[str] = []
 
@@ -42,7 +47,16 @@ class PullGitHubStub:
     async def list_pull_requests(self, owner: str, repo: str, *, head: str | None = None, base: str | None = None, state: str = "open", per_page: int = 50) -> list[dict]:
         assert state in {"open", "closed", "all"}
         assert per_page >= 1
+        if base == NON_ALLOWLISTED_BASE:
+            return []
         return [pr_payload(7)]
+
+    async def create_pull_request(self, owner: str, repo: str, *, head: str, base: str, title: str, body: str | None = None) -> dict:
+        self.created = {"head": head, "base": base, "title": title, "body": body}
+        payload = pr_payload(8, base_branch=base)
+        payload["title"] = title
+        payload["body"] = body
+        return payload
 
     async def get_pull_request_files(self, owner: str, repo: str, pr_number: int, *, per_page: int = 100) -> list[dict]:
         return [
@@ -52,7 +66,7 @@ class PullGitHubStub:
 
     async def update_pull_request(self, owner: str, repo: str, pr_number: int, **kwargs) -> dict:
         self.updated = kwargs
-        payload = pr_payload(pr_number)
+        payload = pr_payload(pr_number, base_branch=kwargs.get("base") or "main")
         payload["title"] = kwargs.get("title") or payload["title"]
         payload["body"] = kwargs.get("body") or payload["body"]
         return payload
@@ -90,3 +104,27 @@ def test_pull_request_update_and_comment() -> None:
     assert updated.pull_request.title == "New title"
     assert comment.comment_id == 99
     assert github.comments == ["CI fixed"]
+
+
+def test_pull_request_base_branch_is_not_limited_to_base_allowlist() -> None:
+    github = PullGitHubStub()
+    service = make_service(github)
+
+    created = asyncio.run(
+        service.create_pull_request(
+            "acme",
+            "demo",
+            CreatePullRequestRequest(
+                head_branch="gpt/fix",
+                base_branch=NON_ALLOWLISTED_BASE,
+                title="Target proposal branch",
+                body="Use a GPT branch as PR base.",
+            ),
+        )
+    )
+    updated = asyncio.run(service.update_pull_request("acme", "demo", UpdatePullRequestRequest(pr_number=7, base_branch=NON_ALLOWLISTED_BASE)))
+
+    assert created.base_branch == NON_ALLOWLISTED_BASE
+    assert github.created and github.created["base"] == NON_ALLOWLISTED_BASE
+    assert updated.pull_request.base_branch == NON_ALLOWLISTED_BASE
+    assert github.updated and github.updated["base"] == NON_ALLOWLISTED_BASE
