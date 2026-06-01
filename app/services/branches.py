@@ -7,7 +7,7 @@ from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
 from app.models.branches import ContinueWorkBranchRequest, ContinueWorkBranchResponse, CreateWorkBranchRequest, CreateWorkBranchResponse
-from app.policy.rules import Policy, is_sha, sanitize_purpose_slug
+from app.policy.rules import Policy, sanitize_purpose_slug
 from app.storage.audit import AuditStore
 
 
@@ -64,11 +64,8 @@ class BranchService:
             await self.github.get_commit_object(owner, repo, request.base_sha)
             return request.base_sha, request.base_sha
         base_ref = request.base_ref or self.settings.default_base_branch
-        if is_sha(base_ref):
-            await self.github.get_commit_object(owner, repo, base_ref)
-            return base_ref, base_ref
         self.policy.assert_read_ref_allowed(base_ref)
-        base_sha = await self.github.get_branch_head(owner, repo, base_ref)
+        base_sha = await self.github.resolve_ref_sha(owner, repo, base_ref)
         return base_ref, base_sha
 
     def _generate_branch_name(self, purpose_slug: str) -> str:

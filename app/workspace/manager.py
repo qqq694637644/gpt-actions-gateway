@@ -6,6 +6,7 @@ import secrets
 import shutil
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -17,6 +18,39 @@ from app.policy.rules import Policy, is_sha
 from app.workspace.git import GitRunner, attach_numstat, normalize_git_paths, parse_numstat, parse_porcelain_z
 from app.workspace.ids import WORKSPACE_ID_RE
 from app.workspace.models import MirrorPrepareStats, WorkspaceMeta, WorkspacePrepareStats, load_meta, save_meta
+
+
+@dataclass(frozen=True)
+class GitRefSpec:
+    ref: str
+    kind: str
+    name: str
+    fetch_refspec: str
+    checkout_target: str
+    tracking_ref: str
+    checkout_branch: str | None = None
+
+
+def _git_ref_spec(ref: str) -> GitRefSpec:
+    if is_sha(ref):
+        return GitRefSpec(ref=ref, kind="sha", name=ref, fetch_refspec=ref, checkout_target=ref, tracking_ref=ref)
+    if ref.startswith("refs/heads/"):
+        name = ref[len("refs/heads/") :]
+        return GitRefSpec(ref=ref, kind="branch", name=name, fetch_refspec=f"+refs/heads/{name}:refs/remotes/origin/{name}", checkout_target=f"refs/remotes/origin/{name}", tracking_ref=f"refs/remotes/origin/{name}", checkout_branch=name)
+    if ref.startswith("heads/"):
+        name = ref[len("heads/") :]
+        return GitRefSpec(ref=ref, kind="branch", name=name, fetch_refspec=f"+refs/heads/{name}:refs/remotes/origin/{name}", checkout_target=f"refs/remotes/origin/{name}", tracking_ref=f"refs/remotes/origin/{name}", checkout_branch=name)
+    if ref.startswith("refs/tags/"):
+        name = ref[len("refs/tags/") :]
+        return GitRefSpec(ref=ref, kind="tag", name=name, fetch_refspec=f"+refs/tags/{name}:refs/tags/{name}", checkout_target=f"refs/tags/{name}", tracking_ref=f"refs/tags/{name}")
+    if ref.startswith("tags/"):
+        name = ref[len("tags/") :]
+        return GitRefSpec(ref=ref, kind="tag", name=name, fetch_refspec=f"+refs/tags/{name}:refs/tags/{name}", checkout_target=f"refs/tags/{name}", tracking_ref=f"refs/tags/{name}")
+    if ref.startswith("refs/"):
+        name = ref[len("refs/") :]
+        local_ref = f"refs/gpt-actions/{name}"
+        return GitRefSpec(ref=ref, kind="ref", name=name, fetch_refspec=f"+refs/{name}:{local_ref}", checkout_target=local_ref, tracking_ref=local_ref)
+    return GitRefSpec(ref=ref, kind="branch", name=ref, fetch_refspec=f"+refs/heads/{ref}:refs/remotes/origin/{ref}", checkout_target=f"refs/remotes/origin/{ref}", tracking_ref=f"refs/remotes/origin/{ref}", checkout_branch=ref)
 
 
 class WorkspaceManager:
@@ -265,27 +299,29 @@ class WorkspaceManager:
         if is_sha(branch):
             await self.git.run(["git", *auth_config, "fetch", "origin", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         else:
-            await self.git.run(["git", *auth_config, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+            await self.git.run(["git", *auth_config, "fetch", "origin", _git_ref_spec(branch).fetch_refspec], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
 
     async def fetch_branch_from_mirror(self, repo_dir: Path, owner: str, repo: str, branch: str) -> None:
         mirror = self._mirror_path(owner, repo)
         if is_sha(branch):
             await self.git.run(["git", "fetch", str(mirror), branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         else:
-            await self.git.run(["git", "fetch", str(mirror), f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+            await self.git.run(["git", "fetch", str(mirror), _git_ref_spec(branch).fetch_refspec], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
 
     async def checkout_ref(self, repo_dir: Path, ref: str) -> None:
-        if is_sha(ref):
+        spec = _git_ref_spec(ref)
+        if spec.kind == "sha":
             await self.git.run(["git", "checkout", "--detach", ref], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        elif spec.checkout_branch:
+            await self.git.run(["git", "checkout", "-B", spec.checkout_branch, spec.checkout_target], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         else:
-            await self.git.run(["git", "checkout", "-B", ref, f"origin/{ref}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+            await self.git.run(["git", "checkout", "--detach", spec.checkout_target], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
 
     async def reset_to_remote(self, repo_dir: Path, branch: str, *, clean_untracked: bool) -> list[str]:
-        if is_sha(branch):
-            await self.git.run(["git", "reset", "--hard", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-        else:
+        spec = _git_ref_spec(branch)
+        if spec.kind != "sha":
             await self.fetch_branch(repo_dir, branch)
-            await self.git.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        await self.git.run(["git", "reset", "--hard", spec.tracking_ref], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         removed: list[str] = []
         if clean_untracked:
             before = await self.untracked_files(repo_dir)
@@ -294,10 +330,7 @@ class WorkspaceManager:
         return removed
 
     async def reset_to_cached_remote(self, repo_dir: Path, branch: str, *, clean_untracked: bool) -> list[str]:
-        if is_sha(branch):
-            await self.git.run(["git", "reset", "--hard", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-        else:
-            await self.git.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        await self.git.run(["git", "reset", "--hard", _git_ref_spec(branch).tracking_ref], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         removed: list[str] = []
         if clean_untracked:
             before = await self.untracked_files(repo_dir)
@@ -310,9 +343,7 @@ class WorkspaceManager:
         return result.stdout.strip()
 
     async def remote_head_sha(self, repo_dir: Path, branch: str) -> str | None:
-        if is_sha(branch):
-            return branch
-        result = await self.git.run(["git", "rev-parse", f"origin/{branch}"], cwd=repo_dir, check=False, allowed_exit_codes=(0, 128))
+        result = await self.git.run(["git", "rev-parse", _git_ref_spec(branch).tracking_ref], cwd=repo_dir, check=False, allowed_exit_codes=(0, 128))
         return result.stdout.strip() if result.exit_code == 0 else None
 
     async def current_branch(self, repo_dir: Path) -> str:
@@ -427,9 +458,10 @@ class WorkspaceManager:
         return "\n".join(chunks)
 
     async def ahead_behind(self, repo_dir: Path, branch: str) -> tuple[int, int]:
-        if is_sha(branch):
+        spec = _git_ref_spec(branch)
+        if spec.kind != "branch":
             return 0, 0
-        result = await self.git.run(["git", "rev-list", "--left-right", "--count", f"HEAD...origin/{branch}"], cwd=repo_dir, check=False, allowed_exit_codes=(0, 128))
+        result = await self.git.run(["git", "rev-list", "--left-right", "--count", f"HEAD...{spec.tracking_ref}"], cwd=repo_dir, check=False, allowed_exit_codes=(0, 128))
         if result.exit_code != 0:
             return 0, 0
         parts = result.stdout.strip().split()

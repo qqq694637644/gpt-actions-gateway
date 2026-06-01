@@ -138,6 +138,37 @@ class GitHubClient:
         ref = await self.get_ref(owner, repo, f"heads/{branch}")
         return ref["object"]["sha"]
 
+    async def get_tag_object(self, owner: str, repo: str, tag_sha: str) -> dict[str, Any]:
+        return await self._request("GET", f"/repos/{owner}/{repo}/git/tags/{tag_sha}")
+
+    @staticmethod
+    def _ref_path_for_github(ref: str) -> str:
+        if ref.startswith("refs/"):
+            return ref[len("refs/") :]
+        if ref.startswith(("heads/", "tags/")):
+            return ref
+        return f"heads/{ref}"
+
+    async def resolve_ref_sha(self, owner: str, repo: str, ref: str) -> str:
+        if len(ref) == 40 and all(ch in "0123456789abcdefABCDEF" for ch in ref):
+            await self.get_commit_object(owner, repo, ref)
+            return ref
+
+        github_ref = await self.get_ref(owner, repo, self._ref_path_for_github(ref))
+        obj = github_ref.get("object") or {}
+        obj_type = obj.get("type")
+        obj_sha = obj.get("sha")
+        for _ in range(5):
+            if obj_type == "commit" and obj_sha:
+                return str(obj_sha)
+            if obj_type != "tag" or not obj_sha:
+                break
+            tag = await self.get_tag_object(owner, repo, str(obj_sha))
+            obj = tag.get("object") or {}
+            obj_type = obj.get("type")
+            obj_sha = obj.get("sha")
+        raise ApiError(ErrorCode.VALIDATION_ERROR, f"Ref {ref!r} does not resolve to a commit.", status_code=422, details={"ref": ref, "object_type": obj_type, "object_sha": obj_sha})
+
     async def create_ref(self, owner: str, repo: str, branch: str, sha: str) -> dict[str, Any]:
         return await self._request("POST", f"/repos/{owner}/{repo}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha})
 

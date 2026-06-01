@@ -42,6 +42,9 @@ class RepoGitHubStub:
     async def get_branch_head(self, owner: str, repo: str, branch: str) -> str:
         return HEAD
 
+    async def resolve_ref_sha(self, owner: str, repo: str, ref: str) -> str:
+        return HEAD
+
     async def get_commit_object(self, owner: str, repo: str, commit_sha: str) -> dict:
         return {"tree": {"sha": "tree"}}
 

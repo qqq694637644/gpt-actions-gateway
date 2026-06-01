@@ -89,7 +89,7 @@ class CIService:
             matched_by = "commit_sha"
         elif branch:
             self.policy.assert_read_ref_allowed(branch)
-            target_sha = await self.github.get_branch_head(owner, repo, branch)
+            target_sha = await self.github.resolve_ref_sha(owner, repo, branch)
             matched_by = "branch"
             warning = "Branch query was resolved to current branch head SHA."
         elif request.workflow_id and request.created_after:
@@ -101,8 +101,9 @@ class CIService:
         params: dict[str, Any] = {"per_page": 100}
         if target_sha:
             params["head_sha"] = target_sha
-        if branch:
-            params["branch"] = branch
+        branch_filter = _workflow_branch_filter(branch)
+        if branch_filter:
+            params["branch"] = branch_filter
         if request.event:
             params["event"] = request.event
         if request.created_after:
@@ -651,6 +652,18 @@ def _trim_log(raw_log: str, *, max_lines: int, max_bytes: int) -> tuple[str, str
     selected = lines[:max_lines]
     tail = lines[-max_lines:] if lines else []
     return "\n".join(selected), "\n".join(tail), total_lines, truncated
+
+
+def _workflow_branch_filter(ref: str | None) -> str | None:
+    if not ref or is_sha(ref) or ref.startswith(("refs/tags/", "tags/")):
+        return None
+    if ref.startswith("refs/heads/"):
+        return ref[len("refs/heads/") :]
+    if ref.startswith("heads/"):
+        return ref[len("heads/") :]
+    if ref.startswith("refs/"):
+        return None
+    return ref
 
 
 def _extract_step_log(raw_log: str, step_name: str) -> str:

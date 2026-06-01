@@ -21,6 +21,9 @@ class EmptyRepoGitHubStub:
             details={"github_status": 409, "body": "Git Repository is empty."},
         )
 
+    async def resolve_ref_sha(self, owner: str, repo: str, ref: str) -> str:
+        return await self.get_branch_head(owner, repo, ref)
+
     async def create_ref(self, owner: str, repo: str, branch: str, sha: str) -> dict[str, str]:
         return {"ref": f"refs/heads/{branch}", "object": {"sha": sha}}
 

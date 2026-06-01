@@ -25,6 +25,11 @@ class BranchGitHubStub:
             return FEATURE_SHA
         return MAIN_SHA
 
+    async def resolve_ref_sha(self, owner: str, repo: str, ref: str) -> str:
+        if ref in {NON_ALLOWLISTED_BASE, f"refs/heads/{NON_ALLOWLISTED_BASE}", f"heads/{NON_ALLOWLISTED_BASE}"}:
+            return FEATURE_SHA
+        return await self.get_branch_head(owner, repo, ref)
+
     async def create_ref(self, owner: str, repo: str, branch: str, sha: str) -> dict:
         self.created_refs.append((branch, sha))
         if branch == "gpt/existing":
@@ -65,11 +70,11 @@ def test_create_work_branch_base_ref_is_not_limited_to_base_allowlist() -> None:
         service.create_work_branch(
             "acme",
             "demo",
-            CreateWorkBranchRequest(base_ref=NON_ALLOWLISTED_BASE, branch="gpt/from-feature", purpose_slug="fix"),
+            CreateWorkBranchRequest(base_ref=f"refs/heads/{NON_ALLOWLISTED_BASE}", branch="gpt/from-feature", purpose_slug="fix"),
         )
     )
 
-    assert response.base_ref == NON_ALLOWLISTED_BASE
+    assert response.base_ref == f"refs/heads/{NON_ALLOWLISTED_BASE}"
     assert response.base_sha == FEATURE_SHA
     assert response.head_sha == FEATURE_SHA
     assert github.created_refs == [("gpt/from-feature", FEATURE_SHA)]

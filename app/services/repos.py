@@ -193,7 +193,7 @@ class RepoService:
         return SearchCodeResponse(ref=request.ref, matches=matches, total_count=len(matches), truncated=truncated or bool(tree.get("truncated")))
 
     async def _resolve_tree_sha(self, owner: str, repo: str, ref: str) -> tuple[str, str]:
-        commit_sha = ref if is_sha(ref) else await self.github.get_branch_head(owner, repo, ref)
+        commit_sha = await self.github.resolve_ref_sha(owner, repo, ref)
         commit = await self.github.get_commit_object(owner, repo, commit_sha)
         return commit_sha, commit["tree"]["sha"]
 

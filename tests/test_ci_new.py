@@ -43,6 +43,13 @@ class CIGitHubStub:
         self.run_zip = make_zip({"job1/1_build.txt": "build ok\nwarning\n", "job2/test.log": "tests passed\n"})
         self.artifact_zip = make_zip({"junit.xml": "<testsuite tests='1'/>\n", "image.png": "not really png"})
 
+    async def resolve_ref_sha(self, owner: str, repo: str, ref: str) -> str:
+        if ref in {"refs/heads/feature/android-ci-fix", "heads/feature/android-ci-fix", "feature/android-ci-fix"}:
+            return "4444444444444444444444444444444444444444"
+        if ref in {"refs/tags/v1.0.0", "tags/v1.0.0"}:
+            return "5555555555555555555555555555555555555555"
+        return "2222222222222222222222222222222222222222"
+
     async def get_workflow(self, owner: str, repo: str, workflow_id: str) -> dict:
         return {"id": workflow_id, "path": f".github/workflows/{workflow_id}", "state": "active"}
 
@@ -79,12 +86,19 @@ class CIGitHubStub:
         }
 
     async def list_workflow_runs(self, owner: str, repo: str, *, workflow_id: str | None = None, params: dict | None = None) -> dict:
-        assert workflow_id == "ci.yml"
         assert params is not None
-        assert params.get("event") == "workflow_dispatch"
-        assert "created" in params
-        assert "branch" not in params
-        assert "head_sha" not in params
+        if params.get("head_sha") == "4444444444444444444444444444444444444444":
+            assert params.get("branch") == "feature/android-ci-fix"
+            event = "push"
+            head_branch = "feature/android-ci-fix"
+        else:
+            assert workflow_id == "ci.yml"
+            assert params.get("event") == "workflow_dispatch"
+            assert "created" in params
+            assert "branch" not in params
+            assert "head_sha" not in params
+            event = "workflow_dispatch"
+            head_branch = None
         return {
             "workflow_runs": [
                 {
@@ -92,9 +106,9 @@ class CIGitHubStub:
                     "run_attempt": 1,
                     "workflow_id": workflow_id,
                     "name": "CI",
-                    "event": "workflow_dispatch",
-                    "head_branch": None,
-                    "head_sha": "3333333333333333333333333333333333333333",
+                    "event": event,
+                    "head_branch": head_branch,
+                    "head_sha": params.get("head_sha") or "3333333333333333333333333333333333333333",
                     "status": "completed",
                     "conclusion": "success",
                     "html_url": "https://github.test/run/88",
@@ -232,6 +246,17 @@ def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
     assert dispatch.query_hint["workflow_id"] == "ci.yml"
     assert status.matched_by == "workflow_id"
     assert status.conclusion == "success"
+
+
+def test_ci_status_branch_ref_is_resolved_without_double_heads_prefix() -> None:
+    github = CIGitHubStub()
+    service = make_service(github)
+
+    status = asyncio.run(service.get_ci_status("acme", "demo", CIStatusQueryRequest(branch="refs/heads/feature/android-ci-fix")))
+
+    assert status.matched_by == "branch"
+    assert status.workflow_runs[0].head_sha == "4444444444444444444444444444444444444444"
+    assert status.workflow_runs[0].head_branch == "feature/android-ci-fix"
 
 
 def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -> None:

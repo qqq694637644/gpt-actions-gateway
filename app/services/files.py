@@ -16,7 +16,7 @@ from app.models.files import (
     ReadFilesResponse,
     TreeEntry,
 )
-from app.policy.rules import Policy, is_sha
+from app.policy.rules import Policy
 
 
 def _entry_type(entry: dict) -> str:
@@ -52,7 +52,7 @@ class FileService:
 
     async def _resolve_tree_sha(self, owner: str, repo: str, ref: str) -> tuple[str, str]:
         self.policy.assert_read_ref_allowed(ref)
-        commit_sha = ref if is_sha(ref) else await self.github.get_branch_head(owner, repo, ref)
+        commit_sha = await self.github.resolve_ref_sha(owner, repo, ref)
         commit = await self.github.get_commit_object(owner, repo, commit_sha)
         return commit_sha, commit["tree"]["sha"]
 
@@ -99,8 +99,9 @@ class FileService:
     async def _read_content_bytes(self, owner: str, repo: str, *, ref: str, path: str) -> tuple[str, int, bytes]:
         self.policy.assert_repo_allowed(owner, repo)
         self.policy.assert_read_ref_allowed(ref)
+        commit_sha = await self.github.resolve_ref_sha(owner, repo, ref)
         normalized = self.policy.assert_read_path_allowed(path)
-        metadata = await self.github.get_contents(owner, repo, normalized, ref=ref)
+        metadata = await self.github.get_contents(owner, repo, normalized, ref=commit_sha)
         if isinstance(metadata, list) or metadata.get("type") != "file":
             raise ApiError(ErrorCode.PATH_NOT_ALLOWED, "Path is not a file.", status_code=400, details={"path": normalized})
         size = int(metadata.get("size") or 0)
