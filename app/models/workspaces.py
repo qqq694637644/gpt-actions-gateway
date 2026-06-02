@@ -65,6 +65,8 @@ class WorkspaceExecPwshRequest(GatewayBaseModel):
     timeout_seconds: int | None = Field(default=None, ge=1)
     max_output_bytes: int | None = Field(default=None, ge=1)
     allow_network: bool = False
+    plain_output: bool = Field(default=False, description="Opt in to plain assistant-facing output by setting PSStyle and stripping ANSI escapes.")
+    utf8_output: bool = Field(default=False, description="Opt in to UTF-8 PowerShell console/output defaults before running the script.")
 
 
 class WorkspaceExecPwshResponse(GatewayBaseModel):
