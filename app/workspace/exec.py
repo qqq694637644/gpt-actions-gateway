@@ -81,6 +81,7 @@ def build_pwsh_script(script: str, *, plain_output: bool, utf8_output: bool) -> 
             [
                 "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
                 "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+                "$env:PYTHONIOENCODING = 'utf-8'",
                 "$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'",
                 "$PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'",
                 "$PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'",

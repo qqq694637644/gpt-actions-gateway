@@ -6,11 +6,11 @@ from app.models.workspaces import WorkspaceExecPwshRequest
 from app.workspace.exec import build_pwsh_script, decode_command_result, strip_ansi_escape_sequences
 
 
-def test_workspace_exec_request_output_options_default_to_off() -> None:
+def test_workspace_exec_request_output_options_default_to_utf8_only() -> None:
     request = WorkspaceExecPwshRequest(script="Write-Output ok")
 
     assert request.plain_output is False
-    assert request.utf8_output is False
+    assert request.utf8_output is True
 
 
 def test_build_pwsh_script_injects_only_requested_preludes() -> None:
@@ -18,7 +18,17 @@ def test_build_pwsh_script_injects_only_requested_preludes() -> None:
 
     assert "$PSStyle.OutputRendering = 'PlainText'" in script
     assert "[Console]::OutputEncoding" in script
+    assert "$env:PYTHONIOENCODING = 'utf-8'" in script
     assert script.endswith("Write-Output 'ok'")
+
+
+def test_build_pwsh_script_utf8_prelude_configures_python_child_output() -> None:
+    script = build_pwsh_script("python -c \"print('中文')\"", plain_output=False, utf8_output=True)
+
+    assert "[Console]::OutputEncoding" in script
+    assert "$OutputEncoding" in script
+    assert "$env:PYTHONIOENCODING = 'utf-8'" in script
+    assert script.endswith("python -c \"print('中文')\"")
 
 
 def test_build_pwsh_script_does_not_change_default_script() -> None:
