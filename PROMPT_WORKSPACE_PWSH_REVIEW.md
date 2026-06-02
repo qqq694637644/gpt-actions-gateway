@@ -171,7 +171,7 @@ Add a section after the current `workspaceExecPwsh` tool description and before 
 
 Suggested text:
 
-```markdown
+````markdown
 ## workspaceExecPwsh PowerShell 7 guidance
 
 `workspaceExecPwsh` runs PowerShell 7 (`pwsh`) from the repository root. Treat scripts as PowerShell, not Bash.
@@ -207,17 +207,15 @@ print(Path.cwd())
 '@
 $code | python -
 ```
-```
-
-Note: the nested Markdown fence above may need escaping or different fence lengths when copied into `PROMPT.md`.
+````
 
 ## Optional backend improvements
 
 These are runtime/backend improvements, not prompt-only changes:
 
-1. Inject the recommended PowerShell prelude automatically for `workspaceExecPwsh`, or provide an opt-in `plain_output` mode.
-2. Strip ANSI escape sequences from captured stdout/stderr.
-3. Set UTF-8 console/output encoding at `pwsh` process startup.
+1. Prefer opt-in output modes, such as `plain_output` and `utf8_output`, instead of unconditionally injecting the full prelude. In particular, automatic `$ErrorActionPreference = 'Stop'` can change script behavior.
+2. If ANSI cleanup is added, strip ANSI escape sequences only for display/assistant-facing output while preserving raw stdout/stderr for debugging and audit records.
+3. Offer an opt-in or documented default for UTF-8 console/output encoding at `pwsh` process startup.
 4. Add tests for:
    - Chinese stdout/stderr round trip.
    - ANSI-colored output stripping/plain mode.
@@ -230,15 +228,15 @@ These are runtime/backend improvements, not prompt-only changes:
 A reviewer should decide:
 
 - Whether `PROMPT.md` should include the full section or a shorter version.
-- Whether the gateway should handle plain output and UTF-8 automatically instead of relying on prompt guidance.
+- Whether the gateway should provide opt-in plain/UTF-8 output modes instead of relying only on prompt guidance.
 - Whether security-scan false positives on explanatory text should remain strict or get a documentation-specific path.
 - Whether `.gitattributes` should be added to this repository itself.
 
 ## Validation performed for this document
 
-When this document was created:
+For commit `abaed75116e2db045532b1a3cd9621c6a31b9adf`:
 
-- The previous direct edit to `PROMPT.md` was reverted.
-- This file was added as a separate root-level review document.
-- `git diff --check` should be run before commit.
-- Full test suite can be run with `python -m pytest -q`; the previous prompt-only edit passed `86 passed`, but this document-only revision should still be checked before final PR update.
+- The previous direct edit to `PROMPT.md` was reverted; the PR file list only adds this review document.
+- `git diff --check` passed.
+- `python -m pytest -q` passed: `86 passed`.
+- CI query for PR #9 / this commit found no matching workflow run.
