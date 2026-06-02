@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -63,6 +65,8 @@ def make_service(
     *,
     allow_all_repos: bool = True,
     allowed_repos: str = "",
+    workspace_max_count: int = 50,
+    workspace_ttl_hours: int = 48,
 ) -> tuple[WorkspaceService, WorkspaceManager]:
     settings = Settings(
         allow_all_repos=allow_all_repos,
@@ -71,6 +75,8 @@ def make_service(
         workspace_mirror_root=str(tmp_path / "mirrors"),
         audit_db_url=f"sqlite:///{tmp_path / 'audit.db'}",
         allow_workflow_edit=True,
+        workspace_max_count=workspace_max_count,
+        workspace_ttl_hours=workspace_ttl_hours,
     )
     github = LocalGitHub(remote)
     policy = Policy(settings)
@@ -118,6 +124,54 @@ def test_workspace_prepare_explicit_ws_id_reports_created_true(tmp_path: Path):
     assert prepared.created is True
     assert prepared.diagnostics.mirror_stage in {"clone", "fetch"}
     assert prepared.diagnostics.total_duration_ms >= prepared.diagnostics.mirror_duration_ms
+
+
+def test_workspace_prepare_prunes_expired_workspace_before_count_limit(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_max_count=1, workspace_ttl_hours=48)
+    expired = manager.workspace_dir("ws_expired")
+    expired.mkdir(parents=True)
+    old = time.time() - 49 * 60 * 60
+    os.utime(expired, (old, old))
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_new")))
+
+    assert prepared.workspace_id == "ws_new"
+    assert not expired.exists()
+
+
+def test_workspace_prepare_keeps_fresh_and_locked_workspace_dirs(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_max_count=3, workspace_ttl_hours=48)
+    fresh = manager.workspace_dir("ws_fresh")
+    locked = manager.workspace_dir("ws_locked")
+    fresh.mkdir(parents=True)
+    locked.mkdir(parents=True)
+    (locked / "lock").write_text("busy", encoding="utf-8")
+    old = time.time() - 49 * 60 * 60
+    os.utime(locked, (old, old))
+
+    run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_new")))
+
+    assert fresh.exists()
+    assert locked.exists()
+
+
+def test_workspace_prune_ignores_non_workspace_dirs_and_mirrors(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    _, manager = make_service(tmp_path, remote, workspace_max_count=3, workspace_ttl_hours=48)
+    non_workspace = manager.root / "cache"
+    mirror_dir = manager.mirror_root / "acme" / "demo.git"
+    non_workspace.mkdir(parents=True)
+    mirror_dir.mkdir(parents=True)
+    old = time.time() - 49 * 60 * 60
+    os.utime(non_workspace, (old, old))
+    os.utime(mirror_dir, (old, old))
+
+    assert manager.prune_expired_workspace_dirs() == 0
+
+    assert non_workspace.exists()
+    assert mirror_dir.exists()
 
 
 def test_workspace_prepare_mirror_then_from_mirror(tmp_path: Path):

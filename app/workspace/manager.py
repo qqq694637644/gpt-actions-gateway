@@ -152,6 +152,7 @@ class WorkspaceManager:
             self.policy.assert_read_ref_allowed(target_ref)
 
         explicit_workspace_id = workspace_id is not None
+        self.prune_expired_workspace_dirs()
         if workspace_id is None:
             self._enforce_workspace_count()
             workspace_id = self._new_workspace_id()
@@ -473,6 +474,26 @@ class WorkspaceManager:
 
     def _new_workspace_id(self) -> str:
         return "ws_" + secrets.token_hex(8)
+
+    def prune_expired_workspace_dirs(self) -> int:
+        ttl_hours = self.settings.workspace_ttl_hours
+        if ttl_hours <= 0:
+            return 0
+        cutoff = time.time() - ttl_hours * 60 * 60
+        deleted = 0
+        for item in self.root.glob("ws_*"):
+            if not item.is_dir() or not WORKSPACE_ID_RE.fullmatch(item.name):
+                continue
+            if (item / "lock").exists():
+                continue
+            try:
+                if item.stat().st_mtime >= cutoff:
+                    continue
+                shutil.rmtree(item)
+                deleted += 1
+            except OSError:
+                continue
+        return deleted
 
     def _enforce_workspace_count(self) -> None:
         if self.settings.workspace_max_count <= 0:
