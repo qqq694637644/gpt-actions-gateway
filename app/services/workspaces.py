@@ -123,7 +123,15 @@ class WorkspaceService:
         max_output = min(request.max_output_bytes or self.settings.workspace_max_output_bytes, self.settings.workspace_max_output_bytes)
         repo_dir = self.manager.repo_dir(workspace_id)
         with self.manager.lock(workspace_id):
-            result = await self.executor.execute(repo_dir, script=request.script, timeout_seconds=timeout, max_output_bytes=max_output, allow_network=request.allow_network)
+            result = await self.executor.execute(
+                repo_dir,
+                script=request.script,
+                timeout_seconds=timeout,
+                max_output_bytes=max_output,
+                allow_network=request.allow_network,
+                plain_output=request.plain_output,
+                utf8_output=request.utf8_output,
+            )
             changed, _, _ = await self.manager.changed_files(repo_dir)
             diff_stat = await self.manager.diff_stat(repo_dir)
         self._audit(
