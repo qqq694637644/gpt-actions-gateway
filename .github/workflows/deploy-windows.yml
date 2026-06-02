@@ -1,0 +1,130 @@
+name: Deploy to Windows server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-windows-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Package and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      DEPLOY_HOST: ${{ secrets.WINDOWS_DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.WINDOWS_DEPLOY_PORT || '22' }}
+      DEPLOY_USER: ${{ secrets.WINDOWS_DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.WINDOWS_DEPLOY_PATH }}
+      DEPLOY_SERVICE: ${{ secrets.WINDOWS_DEPLOY_SERVICE }}
+      PACKAGE_NAME: gpt-actions-gateway-${{ github.sha }}.zip
+
+    steps:
+      - name: Check required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST" || { echo "WINDOWS_DEPLOY_HOST is required"; exit 1; }
+          test -n "$DEPLOY_USER" || { echo "WINDOWS_DEPLOY_USER is required"; exit 1; }
+          test -n "${{ secrets.WINDOWS_DEPLOY_SSH_KEY }}" || { echo "WINDOWS_DEPLOY_SSH_KEY is required"; exit 1; }
+          test -n "$DEPLOY_PATH" || { echo "WINDOWS_DEPLOY_PATH is required"; exit 1; }
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Create deployment package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Join-Path $env:RUNNER_TEMP $env:PACKAGE_NAME
+          $staging = Join-Path $env:RUNNER_TEMP 'deploy-src'
+
+          if (Test-Path $staging) {
+            Remove-Item $staging -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $staging | Out-Null
+
+          Get-ChildItem -Force | Where-Object {
+            $_.Name -notin @('.git', '.github')
+          } | Copy-Item -Destination $staging -Recurse -Force
+
+          if (Test-Path $package) {
+            Remove-Item $package -Force
+          }
+          Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $package -Force
+          "PACKAGE_PATH=$package" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure SSH key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.WINDOWS_DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload package to Windows server
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_deploy -P "$DEPLOY_PORT" "$PACKAGE_PATH" "$DEPLOY_USER@$DEPLOY_HOST:$PACKAGE_NAME"
+
+      - name: Activate release on Windows server
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" 'powershell -NoProfile -ExecutionPolicy Bypass -Command -' <<'POWERSHELL'
+          $ErrorActionPreference = 'Stop'
+
+          $deployPath = '${{ secrets.WINDOWS_DEPLOY_PATH }}'
+          $serviceName = '${{ secrets.WINDOWS_DEPLOY_SERVICE }}'
+          $packagePath = Join-Path $HOME '${{ env.PACKAGE_NAME }}'
+          $releasesPath = Join-Path $deployPath 'releases'
+          $currentPath = Join-Path $deployPath 'current'
+          $newReleasePath = Join-Path $releasesPath '${{ github.sha }}'
+          $previousPath = Join-Path $deployPath ('previous-' + (Get-Date -Format 'yyyyMMddHHmmss'))
+
+          New-Item -ItemType Directory -Path $deployPath -Force | Out-Null
+          New-Item -ItemType Directory -Path $releasesPath -Force | Out-Null
+
+          if (Test-Path $newReleasePath) {
+            Remove-Item $newReleasePath -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $newReleasePath | Out-Null
+          Expand-Archive -Path $packagePath -DestinationPath $newReleasePath -Force
+
+          foreach ($item in @('.env', 'data', '.venv', 'venv', 'myvenv')) {
+            $source = Join-Path $currentPath $item
+            $destination = Join-Path $newReleasePath $item
+            if (Test-Path $source) {
+              Copy-Item -Path $source -Destination $destination -Recurse -Force
+            }
+          }
+
+          $serviceExists = $false
+          if ($serviceName) {
+            $serviceExists = [bool](Get-Service -Name $serviceName -ErrorAction SilentlyContinue)
+          }
+
+          if ($serviceExists) {
+            Stop-Service -Name $serviceName -Force -ErrorAction Stop
+          }
+
+          if (Test-Path $currentPath) {
+            Move-Item -Path $currentPath -Destination $previousPath -Force
+          }
+          Move-Item -Path $newReleasePath -Destination $currentPath -Force
+
+          if ($serviceExists) {
+            Start-Service -Name $serviceName -ErrorAction Stop
+          }
+
+          Remove-Item -Path $packagePath -Force -ErrorAction SilentlyContinue
+          Write-Host "Deployed ${{ github.sha }} to $currentPath"
+          POWERSHELL
