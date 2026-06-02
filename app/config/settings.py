@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     workspace_max_patch_bytes: int = Field(default=200_000)
     workspace_max_write_bytes: int = Field(default=200_000)
     workspace_max_changed_files: int = 200
-    workspace_ttl_hours: int = 24
+    workspace_ttl_hours: int = 48
     workspace_max_count: int = 50
     workspace_allow_network: bool = False
     workspace_shell: str = "pwsh"
