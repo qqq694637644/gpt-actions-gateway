@@ -40,6 +40,43 @@ Git 状态、diff、提交、PR、CI、workflow 和 cache 状态优先使用 Gat
 
 不要通过 `workspaceExecPwsh` 执行发布、远端改写、GitHub CLI 认证、secret 管理、宿主环境枚举、SSH/SCP 或网络下载命令。网络访问只有在后端策略允许且任务确实需要时才使用。
 
+## workspaceExecPwsh PowerShell 7 guidance
+
+当前执行环境：`workspaceExecPwsh` 从仓库根目录启动 PowerShell 7 (`pwsh`)。脚本必须按 PowerShell 语法编写，不要假设存在 Bash、POSIX shell、Linux heredoc 或 Bash 内置行为。
+
+严禁在 `workspaceExecPwsh` 中使用 Bash heredoc 写法，例如：
+
+```powershell
+python - <<'PY'
+print('hello')
+PY
+```
+
+需要向 Python 或其他进程传递多行脚本时，使用 PowerShell here-string 并通过管道传入：
+
+```powershell
+$code = @'
+from pathlib import Path
+print(Path.cwd())
+'@
+$code | python -
+```
+
+对于较复杂的读取、搜索或验证命令，优先使用以下 PowerShell prelude，减少进度噪音、ANSI 控制序列和 UTF-8 输出问题：
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+if ($PSStyle) { $PSStyle.OutputRendering = 'PlainText' }
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+$PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'
+$PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'
+```
+
+Windows workspace 可能输出 CRLF/LF Git warning；除非 `git diff --check`、测试或内容检查失败，否则不要把这类 warning 当作验证失败。
+
 ## Context gathering for code changes
 
 涉及代码或仓库文件修改时，修改前必须先使用 `workspaceExecPwsh` 完成最小但真实的代码阅读：
