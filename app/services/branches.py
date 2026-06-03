@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
@@ -67,12 +67,11 @@ class BranchService:
         if is_sha(base_ref):
             await self.github.get_commit_object(owner, repo, base_ref)
             return base_ref, base_ref
-        self.policy.assert_base_branch_allowed(base_ref)
         base_sha = await self.github.get_branch_head(owner, repo, base_ref)
         return base_ref, base_sha
 
     def _generate_branch_name(self, purpose_slug: str) -> str:
         slug = sanitize_purpose_slug(purpose_slug)
-        date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+        date_part = datetime.now(UTC).strftime("%Y%m%d")
         suffix = secrets.token_hex(3)
         return f"{self.settings.write_branch_prefix}{slug}-{date_part}-{suffix}"

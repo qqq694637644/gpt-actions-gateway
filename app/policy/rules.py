@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Iterable
 from pathlib import PurePosixPath
-from typing import Iterable
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
@@ -120,18 +120,6 @@ class Policy:
                 status_code=403,
                 suggestion="Use READ_BRANCH_ALLOWLIST or read by exact commit SHA.",
                 details={"ref": ref, "allowlist": self.settings.read_branch_patterns},
-            )
-
-    def assert_base_branch_allowed(self, branch: str) -> None:
-        if is_sha(branch):
-            return
-        if not branch_matches(branch, self.settings.base_branch_patterns):
-            raise ApiError(
-                ErrorCode.BASE_BRANCH_NOT_ALLOWED,
-                f"Base branch {branch!r} is not allowed.",
-                status_code=403,
-                suggestion="Use a base branch from BASE_BRANCH_ALLOWLIST.",
-                details={"branch": branch, "allowlist": self.settings.base_branch_patterns},
             )
 
     def assert_write_branch_allowed(self, branch: str) -> None:

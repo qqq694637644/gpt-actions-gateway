@@ -6,14 +6,14 @@ from app.models.common import GatewayBaseModel, IdempotentRequest
 
 
 class CreateWorkBranchRequest(IdempotentRequest):
-    base_ref: str | None = Field(default=None, description="Allowed base branch name or exact commit SHA. Defaults to DEFAULT_BASE_BRANCH.")
+    base_ref: str | None = Field(default=None, description="Base branch name or exact commit SHA. Defaults to DEFAULT_BASE_BRANCH.")
     base_sha: str | None = Field(default=None, min_length=7, description="Exact commit SHA to branch from. Takes precedence over base_ref.")
     branch: str | None = Field(default=None, description="Optional explicit gpt/* branch name.")
     purpose_slug: str = Field(default="task", min_length=1, max_length=80)
     continue_if_exists: bool = Field(default=True)
 
     @model_validator(mode="after")
-    def validate_request(self) -> "CreateWorkBranchRequest":
+    def validate_request(self) -> CreateWorkBranchRequest:
         if self.base_sha and self.base_ref:
             raise ValueError("base_sha and base_ref are mutually exclusive")
         return self
