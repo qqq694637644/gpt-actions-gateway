@@ -3,8 +3,8 @@ from __future__ import annotations
 import base64
 import fnmatch
 import hashlib
+from collections.abc import Iterable
 from pathlib import PurePosixPath
-from typing import Iterable
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
@@ -63,7 +63,6 @@ class RepoService:
 
     async def get_branch_protection(self, owner: str, repo: str, request: GetBranchProtectionRequest) -> GetBranchProtectionResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        self.policy.assert_base_branch_allowed(request.branch)
         try:
             protection = await self.github.get_branch_protection(owner, repo, request.branch)
         except ApiError as exc:

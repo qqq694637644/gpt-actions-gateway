@@ -68,7 +68,7 @@ Get-Content path/to/file -TotalCount 200
 ### Read-only investigation
 
 ```text
-prepareWorkspace(base_ref=<allowed branch/ref>, workspace_id="ws_<task>")
+prepareWorkspace(base_ref=<branch/ref>, workspace_id="ws_<task>")
 workspaceStatus 确认 branch、HEAD、dirty 状态
 workspaceExecPwsh 列顶层结构、搜索、读取相关文件
 ```
@@ -76,7 +76,7 @@ workspaceExecPwsh 列顶层结构、搜索、读取相关文件
 ### New maintenance task
 
 ```text
-createWorkBranch(purpose_slug=<task>, base_ref=<allowed branch/ref>)
+createWorkBranch(purpose_slug=<task>, base_ref=<branch/ref>)
 prepareWorkspace(branch=<createWorkBranch.branch>, workspace_id="ws_<task>")
 workspaceStatus 确认 branch、head_sha、remote_head_sha、dirty 状态
 workspaceExecPwsh 列结构、搜索、读取相关文件、必要时运行基线测试
@@ -132,7 +132,7 @@ listCaches -> deleteCache(dry_run=true) -> 明确目标后 deleteCache(dry_run=f
 
 ```text
 getPullRequest
-确认 PR open、非 draft、head_sha 符合预期、base 分支允许
+确认 PR open、非 draft、head_sha 符合预期
 mergePullRequest(expected_head_sha=当前 head_sha)
 ```
 

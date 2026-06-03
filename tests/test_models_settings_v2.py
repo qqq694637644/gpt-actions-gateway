@@ -16,6 +16,8 @@ def test_removed_settings_are_not_present(tmp_path):
         "allow_rerun_ci",
         "allow_auto_merge",
         "enable_debug_routes",
+        "base_branch_allowlist",
+        "base_branch_patterns",
     ]
     for name in removed:
         assert not hasattr(settings, name)

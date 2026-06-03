@@ -31,7 +31,6 @@ class PullRequestService:
     async def create_pull_request(self, owner: str, repo: str, request: CreatePullRequestRequest) -> CreatePullRequestResponse:
         self.policy.assert_repo_allowed(owner, repo)
         self.policy.assert_write_branch_allowed(request.head_branch)
-        self.policy.assert_base_branch_allowed(request.base_branch)
         existing = await self.github.list_pull_requests(owner, repo, head=f"{owner}:{request.head_branch}", base=request.base_branch, state="open", per_page=10)
         if existing:
             pr = existing[0]
@@ -72,8 +71,6 @@ class PullRequestService:
 
     async def update_pull_request(self, owner: str, repo: str, request: UpdatePullRequestRequest) -> UpdatePullRequestResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        if request.base_branch:
-            self.policy.assert_base_branch_allowed(request.base_branch)
         pr = await self.github.update_pull_request(owner, repo, request.pr_number, title=request.title, body=request.body, state=request.state, base=request.base_branch)
         return UpdatePullRequestResponse(pull_request=self._info(pr))
 
@@ -82,7 +79,6 @@ class PullRequestService:
         pr = await self.github.get_pull_request(owner, repo, request.pr_number)
         info = self._info(pr)
         self.policy.assert_write_branch_allowed(info.head_branch)
-        self.policy.assert_base_branch_allowed(info.base_branch)
         if info.merged:
             raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is already merged.", status_code=409, details={"pr_number": request.pr_number})
         if info.state != "open":

@@ -11,7 +11,7 @@ from app.policy.rules import Policy
 from app.services.pulls import PullRequestService
 
 
-def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True) -> dict:
+def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True, base_ref: str = "main") -> dict:
     return {
         "number": 10,
         "html_url": "https://github.test/acme/demo/pull/10",
@@ -19,7 +19,7 @@ def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False
         "title": "Fix CI",
         "body": "body",
         "head": {"ref": "gpt/fix-ci", "sha": "2222222222222222222222222222222222222222"},
-        "base": {"ref": "main", "sha": "1111111111111111111111111111111111111111"},
+        "base": {"ref": base_ref, "sha": "1111111111111111111111111111111111111111"},
         "draft": draft,
         "merged": merged,
         "mergeable": mergeable,
@@ -29,8 +29,8 @@ def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False
 
 
 class MergeGitHubStub:
-    def __init__(self, *, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True) -> None:
-        self.pr = pr_payload(merged=merged, state=state, draft=draft, mergeable=mergeable)
+    def __init__(self, *, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True, base_ref: str = "main") -> None:
+        self.pr = pr_payload(merged=merged, state=state, draft=draft, mergeable=mergeable, base_ref=base_ref)
         self.merge_request: dict | None = None
 
     async def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict:
@@ -79,6 +79,16 @@ def test_merge_pull_request_success() -> None:
         "sha": "2222222222222222222222222222222222222222",
         "merge_method": "squash",
     }
+
+
+def test_merge_pull_request_can_target_gpt_base_branch() -> None:
+    github = MergeGitHubStub(base_ref="gpt/parent")
+    service = make_service(github)
+
+    response = asyncio.run(service.merge_pull_request("acme", "demo", MergePullRequestRequest(pr_number=10)))
+
+    assert response.merged is True
+    assert response.pull_request.base_branch == "gpt/parent"
 
 
 def test_merge_pull_request_rejects_invalid_pr_state() -> None:

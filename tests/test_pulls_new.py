@@ -5,6 +5,7 @@ import asyncio
 from app.config.settings import Settings
 from app.models.pulls import (
     CommentPullRequestRequest,
+    CreatePullRequestRequest,
     GetPullRequestRequest,
     ListPullRequestsRequest,
     PullRequestFilesRequest,
@@ -33,6 +34,7 @@ def pr_payload(number: int = 7) -> dict:
 
 class PullGitHubStub:
     def __init__(self) -> None:
+        self.created: dict | None = None
         self.updated: dict | None = None
         self.comments: list[str] = []
 
@@ -42,7 +44,18 @@ class PullGitHubStub:
     async def list_pull_requests(self, owner: str, repo: str, *, head: str | None = None, base: str | None = None, state: str = "open", per_page: int = 50) -> list[dict]:
         assert state in {"open", "closed", "all"}
         assert per_page >= 1
+        if base == "gpt/parent":
+            return []
         return [pr_payload(7)]
+
+    async def create_pull_request(self, owner: str, repo: str, *, head: str, base: str, title: str, body: str) -> dict:
+        self.created = {"head": head, "base": base, "title": title, "body": body}
+        payload = pr_payload(8)
+        payload["head"]["ref"] = head
+        payload["base"]["ref"] = base
+        payload["title"] = title
+        payload["body"] = body
+        return payload
 
     async def get_pull_request_files(self, owner: str, repo: str, pr_number: int, *, per_page: int = 100) -> list[dict]:
         return [
@@ -55,6 +68,7 @@ class PullGitHubStub:
         payload = pr_payload(pr_number)
         payload["title"] = kwargs.get("title") or payload["title"]
         payload["body"] = kwargs.get("body") or payload["body"]
+        payload["base"]["ref"] = kwargs.get("base") or payload["base"]["ref"]
         return payload
 
     async def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> dict:
@@ -80,13 +94,32 @@ def test_pull_request_query_and_files() -> None:
     assert [item.status for item in files.files] == ["modified", "added"]
 
 
+def test_create_pull_request_can_target_gpt_base_branch() -> None:
+    github = PullGitHubStub()
+    service = make_service(github)
+
+    response = asyncio.run(
+        service.create_pull_request(
+            "acme",
+            "demo",
+            CreatePullRequestRequest(head_branch="gpt/child", base_branch="gpt/parent", title="Follow up", body="Stacked PR"),
+        )
+    )
+
+    assert response.pr_number == 8
+    assert response.head_branch == "gpt/child"
+    assert response.base_branch == "gpt/parent"
+    assert github.created == {"head": "gpt/child", "base": "gpt/parent", "title": "Follow up", "body": "Stacked PR"}
+
+
 def test_pull_request_update_and_comment() -> None:
     github = PullGitHubStub()
     service = make_service(github)
 
-    updated = asyncio.run(service.update_pull_request("acme", "demo", UpdatePullRequestRequest(pr_number=7, title="New title", body="New body")))
+    updated = asyncio.run(service.update_pull_request("acme", "demo", UpdatePullRequestRequest(pr_number=7, title="New title", body="New body", base_branch="gpt/parent")))
     comment = asyncio.run(service.comment_pull_request("acme", "demo", CommentPullRequestRequest(pr_number=7, body="CI fixed")))
 
     assert updated.pull_request.title == "New title"
+    assert updated.pull_request.base_branch == "gpt/parent"
     assert comment.comment_id == 99
     assert github.comments == ["CI fixed"]
