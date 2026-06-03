@@ -91,6 +91,16 @@ def test_merge_pull_request_can_target_gpt_base_branch() -> None:
     assert response.pull_request.base_branch == "gpt/parent"
 
 
+def test_merge_pull_request_can_target_arbitrary_base_branch() -> None:
+    github = MergeGitHubStub(base_ref="release/2026.06")
+    service = make_service(github)
+
+    response = asyncio.run(service.merge_pull_request("acme", "demo", MergePullRequestRequest(pr_number=10)))
+
+    assert response.merged is True
+    assert response.pull_request.base_branch == "release/2026.06"
+
+
 def test_merge_pull_request_rejects_invalid_pr_state() -> None:
     closed_service = make_service(MergeGitHubStub(state="closed"))
     with pytest.raises(ApiError) as closed_exc:

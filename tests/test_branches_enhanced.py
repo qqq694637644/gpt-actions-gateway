@@ -69,6 +69,23 @@ def test_create_work_branch_can_use_existing_gpt_branch_as_base() -> None:
     assert response.head_sha == GPT_SHA
 
 
+def test_create_work_branch_can_use_arbitrary_existing_branch_as_base() -> None:
+    service = make_service()
+
+    response = asyncio.run(
+        service.create_work_branch(
+            "acme",
+            "demo",
+            CreateWorkBranchRequest(base_ref="feature/parent", branch="gpt/from-feature", purpose_slug="follow-up"),
+        )
+    )
+
+    assert response.branch == "gpt/from-feature"
+    assert response.base_ref == "feature/parent"
+    assert response.base_sha == MAIN_SHA
+    assert response.head_sha == MAIN_SHA
+
+
 def test_continue_work_branch_is_still_available_as_backend_compatibility() -> None:
     service = make_service()
 
