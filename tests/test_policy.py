@@ -60,6 +60,23 @@ def test_local_python_env_writes_are_blocked_but_deletions_are_allowed() -> None
     assert policy.assert_write_path_allowed(".venv/Lib/site-packages/pkg.py", operation="deleted") == ".venv/Lib/site-packages/pkg.py"
 
 
+@pytest.mark.parametrize("path", [".env.example", ".env.sample", ".env.template"])
+def test_safe_env_example_files_are_allowed(path: str) -> None:
+    policy = make_policy()
+
+    assert policy.assert_write_path_allowed(path) == path
+
+
+@pytest.mark.parametrize("path", [".env", ".env.local", ".env.production", ".env.example.local"])
+def test_real_env_files_remain_blocked(path: str) -> None:
+    policy = make_policy()
+
+    with pytest.raises(ApiError) as exc:
+        policy.assert_write_path_allowed(path)
+
+    assert exc.value.error_code == ErrorCode.PATH_NOT_ALLOWED
+
+
 def test_tree_path_policy_allows_empty_and_normalizes_prefix() -> None:
     policy = make_policy()
     assert policy.assert_tree_path_allowed(None) is None

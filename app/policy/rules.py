@@ -11,6 +11,7 @@ from app.errors import ApiError, ErrorCode
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _PURPOSE_RE = re.compile(r"[^a-z0-9-]+")
 
+ALLOW_WRITE_PATHS = {".env.example", ".env.sample", ".env.template"}
 DENY_WRITE_PATTERNS = [
     ".env",
     ".env.*",
@@ -182,7 +183,7 @@ class Policy:
                 details={"path": normalized},
             )
         for pattern in DENY_WRITE_PATTERNS:
-            if fnmatch.fnmatchcase(normalized, pattern):
+            if normalized not in ALLOW_WRITE_PATHS and fnmatch.fnmatchcase(normalized, pattern):
                 raise ApiError(ErrorCode.PATH_NOT_ALLOWED, f"Path {normalized!r} is blocked by write policy.", status_code=403)
         if self.has_binary_extension(normalized):
             raise ApiError(ErrorCode.BINARY_FILE_NOT_ALLOWED, "Binary-like files cannot be written by this gateway.", status_code=403, details={"path": normalized})
