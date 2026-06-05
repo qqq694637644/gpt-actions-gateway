@@ -28,7 +28,17 @@ def test_build_pwsh_script_utf8_prelude_configures_python_child_output() -> None
     assert "[Console]::OutputEncoding" in script
     assert "$OutputEncoding" in script
     assert "$env:PYTHONIOENCODING = 'utf-8'" in script
+    assert "$env:PYTHONUTF8 = '1'" in script
     assert script.endswith("python -c \"print('中文')\"")
+
+
+def test_build_pwsh_script_can_auto_activate_workspace_python_venv() -> None:
+    script = build_pwsh_script("python --version", plain_output=False, utf8_output=True, activate_python_venv=True, python_venv_dir=".venv")
+
+    assert "$env:VIRTUAL_ENV = $__resolvedPythonVenv" in script
+    assert "Join-Path $__resolvedPythonVenv 'Scripts'" in script
+    assert "Join-Path $__resolvedPythonVenv 'bin'" in script
+    assert script.endswith("python --version")
 
 
 def test_build_pwsh_script_does_not_change_default_script() -> None:

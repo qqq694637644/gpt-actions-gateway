@@ -50,6 +50,16 @@ def test_binary_extension_blocked() -> None:
     assert exc.value.error_code == ErrorCode.BINARY_FILE_NOT_ALLOWED
 
 
+def test_local_python_env_writes_are_blocked_but_deletions_are_allowed() -> None:
+    policy = make_policy()
+
+    with pytest.raises(ApiError) as exc:
+        policy.assert_write_path_allowed(".venv/Lib/site-packages/pkg.py", operation="modified")
+
+    assert exc.value.error_code == ErrorCode.PATH_NOT_ALLOWED
+    assert policy.assert_write_path_allowed(".venv/Lib/site-packages/pkg.py", operation="deleted") == ".venv/Lib/site-packages/pkg.py"
+
+
 def test_tree_path_policy_allows_empty_and_normalizes_prefix() -> None:
     policy = make_policy()
     assert policy.assert_tree_path_allowed(None) is None

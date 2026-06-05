@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     workspace_shell: str = "pwsh"
     workspace_git_user_name: str = "gpt-actions-gateway"
     workspace_git_user_email: str = "gpt-actions-gateway@users.noreply.github.com"
+    workspace_python_venv_enabled: bool = True
+    workspace_python_venv_dir: str = ".venv"
+    workspace_python_venv_python: str = "py -3.13"
+    workspace_python_auto_gitignore: bool = True
+    workspace_python_auto_activate: bool = True
+    workspace_python_auto_install: bool = False
 
     rate_limit_per_minute: int = 60
     audit_db_url: str = "sqlite:///./data/audit.db"
@@ -106,6 +112,23 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_size_fields(cls, value: int | str | None) -> int:
         return parse_size_to_bytes(value)
+
+    @field_validator("workspace_python_venv_dir")
+    @classmethod
+    def _normalize_workspace_python_venv_dir(cls, value: str) -> str:
+        normalized = str(value).replace("\\", "/").strip().strip("/")
+        parts = [part for part in normalized.split("/") if part]
+        if not parts or any(part in {".", ".."} for part in parts):
+            raise ValueError("workspace_python_venv_dir must be a relative path without traversal")
+        return "/".join(parts)
+
+    @field_validator("workspace_python_venv_python")
+    @classmethod
+    def _validate_workspace_python_venv_python(cls, value: str) -> str:
+        command = str(value).strip()
+        if not command:
+            raise ValueError("workspace_python_venv_python must not be empty")
+        return command
 
     @property
     def secrets(self) -> list[str]:
