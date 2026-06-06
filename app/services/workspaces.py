@@ -19,13 +19,13 @@ from app.models.workspaces import (
     WorkspaceDiffResponse,
     WorkspaceExecPwshRequest,
     WorkspaceExecPwshResponse,
+    WorkspacePrepareDiagnostics,
     WorkspaceResetRequest,
     WorkspaceResetResponse,
     WorkspaceStatusRequest,
     WorkspaceStatusResponse,
     WorkspaceWriteFileRequest,
     WorkspaceWriteFileResponse,
-    WorkspacePrepareDiagnostics,
 )
 from app.policy.rules import Policy
 from app.storage.audit import AuditStore
@@ -131,6 +131,9 @@ class WorkspaceService:
                 allow_network=request.allow_network,
                 plain_output=request.plain_output,
                 utf8_output=request.utf8_output,
+                activate_python_venv=self.settings.workspace_python_auto_activate
+                and self.manager.should_use_python_venv(meta.branch, source_pr_number=meta.source_pr_number),
+                python_venv_dir=self.settings.workspace_python_venv_dir,
             )
             changed, _, _ = await self.manager.changed_files(repo_dir)
             diff_stat = await self.manager.diff_stat(repo_dir)

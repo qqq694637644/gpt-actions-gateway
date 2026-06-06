@@ -4,7 +4,7 @@ import re
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?b?)?\s*$", re.IGNORECASE)
@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     workspace_shell: str = "pwsh"
     workspace_git_user_name: str = "gpt-actions-gateway"
     workspace_git_user_email: str = "gpt-actions-gateway@users.noreply.github.com"
+    workspace_python_venv_enabled: bool = True
+    workspace_python_venv_dir: str = ".venv"
+    workspace_python_venv_python: str = "py -3.13"
+    workspace_python_auto_gitignore: bool = True
+    workspace_python_auto_activate: bool = True
+    workspace_python_auto_install: bool = False
 
     rate_limit_per_minute: int = 60
     audit_db_url: str = "sqlite:///./data/audit.db"
@@ -106,6 +112,34 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_size_fields(cls, value: int | str | None) -> int:
         return parse_size_to_bytes(value)
+
+    @field_validator("workspace_python_venv_dir")
+    @classmethod
+    def _normalize_workspace_python_venv_dir(cls, value: str) -> str:
+        raw = str(value).strip().replace("\\", "/")
+        if not raw:
+            raise ValueError("workspace_python_venv_dir must not be empty")
+        if raw.startswith("/") or raw.startswith("//") or re.match(r"^[A-Za-z]:", raw):
+            raise ValueError("workspace_python_venv_dir must be a repository-relative path")
+        normalized = raw.rstrip("/")
+        parts = normalized.split("/")
+        if not parts or any(part in {"", ".", ".."} or ":" in part for part in parts):
+            raise ValueError("workspace_python_venv_dir must be a relative path without traversal, empty segments, or drive syntax")
+        return "/".join(parts)
+
+    @field_validator("workspace_python_venv_python")
+    @classmethod
+    def _validate_workspace_python_venv_python(cls, value: str) -> str:
+        command = str(value).strip()
+        if not command:
+            raise ValueError("workspace_python_venv_python must not be empty")
+        return command
+
+    @model_validator(mode="after")
+    def _reject_unimplemented_python_auto_install(self) -> Settings:
+        if self.workspace_python_auto_install:
+            raise ValueError("WORKSPACE_PYTHON_AUTO_INSTALL is not implemented; keep it false until dependency bootstrap is added")
+        return self
 
     @property
     def secrets(self) -> list[str]:

@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import shlex
 import shutil
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
@@ -206,6 +207,8 @@ class WorkspaceManager:
                     await self.reset_to_remote(repo_dir, target_ref, clean_untracked=True)
             elif clean:
                 await self.reset_to_cached_remote(repo_dir, target_ref, clean_untracked=True)
+            if self.should_use_python_venv(target_ref, source_pr_number=source_pr_number):
+                await self.ensure_python_venv(repo_dir)
             workspace_duration_ms = round((time.perf_counter() - workspace_start) * 1000)
             head_sha = await self.head_sha(repo_dir)
             meta.head_sha = head_sha
@@ -257,6 +260,107 @@ class WorkspaceManager:
         await self._ensure_origin(owner, repo, repo_dir)
         await self.git.run(["git", "config", "user.name", self.settings.workspace_git_user_name], cwd=repo_dir)
         await self.git.run(["git", "config", "user.email", self.settings.workspace_git_user_email], cwd=repo_dir)
+
+    def should_use_python_venv(self, branch: str, *, source_pr_number: int | None = None) -> bool:
+        if not self.settings.workspace_python_venv_enabled:
+            return False
+        return source_pr_number is not None or branch.startswith(self.settings.write_branch_prefix)
+
+    async def ensure_python_venv(self, repo_dir: Path) -> None:
+        venv_dir = self.settings.workspace_python_venv_dir
+        venv_path = repo_dir / venv_dir
+        if self.settings.workspace_python_auto_gitignore:
+            await self.untrack_python_venv(repo_dir)
+            self.ensure_python_venv_gitignore(repo_dir)
+        if venv_path.exists():
+            if not venv_path.is_dir():
+                raise ApiError(
+                    ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                    "Configured Python virtual environment path exists but is not a directory.",
+                    status_code=409,
+                    details={"path": venv_dir},
+                )
+            if not (venv_path / "pyvenv.cfg").is_file():
+                raise ApiError(
+                    ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                    "Configured Python virtual environment is incomplete: pyvenv.cfg is missing.",
+                    status_code=409,
+                    details={"path": venv_dir},
+                )
+        else:
+            python_cmd = split_command(self.settings.workspace_python_venv_python)
+            await self.git.run([*python_cmd, "-m", "venv", venv_dir], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        await self.validate_python_venv(repo_dir)
+
+    async def validate_python_venv(self, repo_dir: Path) -> None:
+        python_path = self.python_venv_executable(repo_dir)
+        try:
+            await self.git.run([str(python_path), "--version"], cwd=repo_dir, timeout=self.settings.workspace_default_timeout_seconds, max_output_bytes=8_000)
+        except ApiError as exc:
+            raise ApiError(
+                ErrorCode.WORKSPACE_EXEC_FAILED,
+                "Workspace Python virtual environment executable failed validation.",
+                status_code=500,
+                details={"path": str(python_path)},
+            ) from exc
+
+    def python_venv_executable(self, repo_dir: Path) -> Path:
+        venv_dir = self.settings.workspace_python_venv_dir
+        venv_path = repo_dir / venv_dir
+        if not venv_path.is_dir():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment directory is missing.",
+                status_code=409,
+                details={"path": venv_dir},
+            )
+        if not (venv_path / "pyvenv.cfg").is_file():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment is incomplete: pyvenv.cfg is missing.",
+                status_code=409,
+                details={"path": venv_dir},
+            )
+        bin_dir = venv_path / ("Scripts" if os.name == "nt" else "bin")
+        python_path = bin_dir / ("python.exe" if os.name == "nt" else "python")
+        if not bin_dir.is_dir():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment is incomplete: interpreter directory is missing.",
+                status_code=409,
+                details={"path": str(bin_dir.relative_to(repo_dir))},
+            )
+        if not python_path.is_file():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment is incomplete: Python executable is missing.",
+                status_code=409,
+                details={"path": str(python_path.relative_to(repo_dir))},
+            )
+        return python_path
+
+    async def untrack_python_venv(self, repo_dir: Path) -> None:
+        venv_dir = self.settings.workspace_python_venv_dir
+        tracked = await self.git.run(["git", "ls-files", "-z", "--", venv_dir], cwd=repo_dir)
+        if not tracked.stdout.strip("\0"):
+            return
+        await self.git.run(["git", "rm", "--cached", "-r", "--ignore-unmatch", "--", venv_dir], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+
+    def ensure_python_venv_gitignore(self, repo_dir: Path) -> None:
+        venv_entry = self.settings.workspace_python_venv_dir.rstrip("/") + "/"
+        gitignore = repo_dir / ".gitignore"
+        if gitignore.exists():
+            text = gitignore.read_text(encoding="utf-8", errors="replace")
+        else:
+            text = ""
+        if gitignore_contains_entry(text, venv_entry):
+            return
+        if text and not text.endswith("\n"):
+            text += "\n"
+        if text.strip():
+            text += "\n"
+        text += "# Local Python virtual environment\n" + venv_entry + "\n"
+        gitignore.write_text(text, encoding="utf-8")
 
     async def _ensure_origin(self, owner: str, repo: str, repo_dir: Path) -> None:
         await self.git.run(["git", "remote", "set-url", "origin", self.github.git_remote_url(owner, repo)], cwd=repo_dir)
@@ -507,6 +611,33 @@ def _path_is_selected(path: str, selectors: list[str]) -> bool:
     if "." in selectors:
         return True
     return any(path == selector or path.startswith(selector.rstrip("/") + "/") for selector in selectors)
+
+
+def split_command(command: str) -> list[str]:
+    parts = shlex.split(command, posix=os.name != "nt")
+    if not parts:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, "Python venv command is empty.", status_code=422)
+    if os.name == "nt":
+        parts = [strip_matching_quotes(part) for part in parts]
+    return parts
+
+
+def strip_matching_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def gitignore_contains_entry(text: str, entry: str) -> bool:
+    normalized_entry = entry.replace("\\", "/").strip().rstrip("/") + "/"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("!"):
+            continue
+        normalized_line = stripped.replace("\\", "/").rstrip("/") + "/"
+        if normalized_line == normalized_entry:
+            return True
+    return False
 
 
 def command_hash(script: str) -> str:

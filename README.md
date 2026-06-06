@@ -82,7 +82,15 @@ WORKSPACE_MAX_CHANGED_FILES=200
 WORKSPACE_ALLOW_NETWORK=false
 WORKSPACE_GIT_USER_NAME=gpt-actions-gateway
 WORKSPACE_GIT_USER_EMAIL=gpt-actions-gateway@users.noreply.github.com
+WORKSPACE_PYTHON_VENV_ENABLED=true
+WORKSPACE_PYTHON_VENV_DIR=.venv
+WORKSPACE_PYTHON_VENV_PYTHON="py -3.13"
+WORKSPACE_PYTHON_AUTO_GITIGNORE=true
+WORKSPACE_PYTHON_AUTO_ACTIVATE=true
+WORKSPACE_PYTHON_AUTO_INSTALL=false
 ```
+
+When `WORKSPACE_PYTHON_VENV_ENABLED=true`, `prepareWorkspace` automatically prepares a repository-root Python virtual environment for writable `gpt/*` branches and same-repository PR heads. It writes `.venv/` to `.gitignore` when missing, removes accidentally tracked `.venv` files from the Git index with `git rm --cached` while keeping local files, and creates `.venv` with the configured Python command. Existing virtual environments are validated instead of silently accepted. `workspaceExecPwsh` then activates the virtual environment by prepending `.venv/Scripts` or `.venv/bin` to `PATH`; missing, incomplete, or non-executable virtual environments fail before the user script runs. Dependency installation is not implemented yet, so `WORKSPACE_PYTHON_AUTO_INSTALL=true` is rejected until a dependency bootstrap flow is added.
 
 ## Standard workflow
 

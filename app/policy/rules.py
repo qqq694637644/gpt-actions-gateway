@@ -11,6 +11,7 @@ from app.errors import ApiError, ErrorCode
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _PURPOSE_RE = re.compile(r"[^a-z0-9-]+")
 
+ALLOW_WRITE_PATHS = {".env.example", ".env.sample", ".env.template"}
 DENY_WRITE_PATTERNS = [
     ".env",
     ".env.*",
@@ -23,13 +24,20 @@ DENY_WRITE_PATTERNS = [
     "secrets/**",
     "credentials/**",
     "node_modules/**",
+    ".venv/**",
+    "venv/**",
+    "env/**",
+    "myvenv/**",
+    ".tox/**",
+    ".nox/**",
     "dist/**",
     "build/**",
     "coverage/**",
     ".git/**",
 ]
 WORKFLOW_PATTERNS = [".github/workflows/*"]
-DENY_WRITE_DIRS = {".git", "dist", "build", "node_modules", "vendor", ".next", ".turbo", "coverage"}
+LOCAL_ENV_DIRS = {".venv", "venv", "env", "myvenv", ".tox", ".nox"}
+DENY_WRITE_DIRS = {".git", "dist", "build", "node_modules", "vendor", ".next", ".turbo", "coverage", *LOCAL_ENV_DIRS}
 BINARY_DENY_EXTENSIONS = {
     ".png",
     ".jpg",
@@ -154,6 +162,8 @@ class Policy:
         if normalized == ".":
             return normalized
         parts = PurePosixPath(normalized).parts
+        if operation == "deleted" and any(part in LOCAL_ENV_DIRS for part in parts):
+            return normalized
         if any(part in DENY_WRITE_DIRS for part in parts):
             raise ApiError(ErrorCode.PATH_NOT_ALLOWED, f"Writing to generated or dependency path {normalized!r} is not allowed.", status_code=403)
         if operation == "deleted" and not self.settings.allow_delete_files:
@@ -173,7 +183,7 @@ class Policy:
                 details={"path": normalized},
             )
         for pattern in DENY_WRITE_PATTERNS:
-            if fnmatch.fnmatchcase(normalized, pattern):
+            if normalized not in ALLOW_WRITE_PATHS and fnmatch.fnmatchcase(normalized, pattern):
                 raise ApiError(ErrorCode.PATH_NOT_ALLOWED, f"Path {normalized!r} is blocked by write policy.", status_code=403)
         if self.has_binary_extension(normalized):
             raise ApiError(ErrorCode.BINARY_FILE_NOT_ALLOWED, "Binary-like files cannot be written by this gateway.", status_code=403, details={"path": normalized})

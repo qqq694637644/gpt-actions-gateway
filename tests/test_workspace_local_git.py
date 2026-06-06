@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from app.models.workspaces import (
 from app.policy.rules import Policy
 from app.services.workspaces import WorkspaceService
 from app.storage.audit import AuditStore
-from app.workspace.manager import WorkspaceManager
+from app.workspace.manager import WorkspaceManager, split_command
 
 
 class LocalGitHub:
@@ -67,6 +68,8 @@ def make_service(
     allowed_repos: str = "",
     workspace_max_count: int = 50,
     workspace_ttl_hours: int = 48,
+    workspace_python_venv_enabled: bool = False,
+    workspace_python_venv_python: str | None = None,
 ) -> tuple[WorkspaceService, WorkspaceManager]:
     settings = Settings(
         allow_all_repos=allow_all_repos,
@@ -77,6 +80,8 @@ def make_service(
         allow_workflow_edit=True,
         workspace_max_count=workspace_max_count,
         workspace_ttl_hours=workspace_ttl_hours,
+        workspace_python_venv_enabled=workspace_python_venv_enabled,
+        workspace_python_venv_python=workspace_python_venv_python or sys.executable,
     )
     github = LocalGitHub(remote)
     policy = Policy(settings)
@@ -172,6 +177,101 @@ def test_workspace_prune_ignores_non_workspace_dirs_and_mirrors(tmp_path: Path):
 
     assert non_workspace.exists()
     assert mirror_dir.exists()
+
+
+def test_prepare_work_branch_bootstraps_python_venv_and_gitignore(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_python")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+
+    assert (repo_dir / ".venv" / "pyvenv.cfg").exists()
+    assert ".venv/" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
+    assert git("check-ignore", ".venv/pyvenv.cfg", cwd=repo_dir) == ".venv/pyvenv.cfg"
+
+
+def test_prepare_base_ref_does_not_bootstrap_python_venv(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(base_ref="main", workspace_id="ws_read_only")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+
+    assert not (repo_dir / ".venv").exists()
+    assert not (repo_dir / ".gitignore").exists()
+
+
+def test_prepare_untracks_tracked_python_venv_and_keeps_local_files(tmp_path: Path):
+    remote, source = make_local_repo(tmp_path)
+    subprocess.run([sys.executable, "-m", "venv", str(source / ".venv")], check=True, capture_output=True)
+    tracked = source / ".venv" / "tracked.txt"
+    tracked.write_text("tracked\n", encoding="utf-8")
+    venv_python = source / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    git("add", "-f", ".venv/pyvenv.cfg", str(venv_python.relative_to(source)).replace("\\", "/"), ".venv/tracked.txt", cwd=source)
+    git("commit", "-m", "Track accidental venv file", cwd=source)
+    git("push", "origin", "gpt/task", cwd=source)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_tracked_venv")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+
+    assert git("ls-files", "--", ".venv", cwd=repo_dir) == ""
+    assert (repo_dir / ".venv" / "tracked.txt").exists()
+    assert ".venv/" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
+
+    response = run(
+        service.commit_and_push(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            WorkspaceCommitAndPushRequest(branch="gpt/task", expected_head_sha=prepared.head_sha, commit_message="Stop tracking local venv"),
+        )
+    )
+
+    assert response.pushed is True
+    assert ".venv/tracked.txt" in {item.path for item in response.changed_files}
+    assert ".gitignore" in {item.path for item in response.changed_files}
+
+
+def test_prepare_existing_broken_python_venv_fails(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=False, workspace_python_venv_python=sys.executable)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_broken_python")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    broken_venv = repo_dir / ".venv"
+    broken_venv.mkdir()
+    (broken_venv / "pyvenv.cfg").write_text("home = test\n", encoding="utf-8")
+    service.settings.workspace_python_venv_enabled = True
+    manager.settings.workspace_python_venv_enabled = True
+
+    with pytest.raises(ApiError) as exc:
+        run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_broken_python")))
+
+    assert exc.value.error_code == ErrorCode.WORKSPACE_POLICY_VIOLATION
+    assert "interpreter directory is missing" in exc.value.message
+
+
+def test_prepare_existing_python_venv_without_pyvenv_cfg_fails(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=False, workspace_python_venv_python=sys.executable)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_missing_pyvenv_cfg")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    (repo_dir / ".venv").mkdir()
+    service.settings.workspace_python_venv_enabled = True
+    manager.settings.workspace_python_venv_enabled = True
+
+    with pytest.raises(ApiError) as exc:
+        run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_missing_pyvenv_cfg")))
+
+    assert exc.value.error_code == ErrorCode.WORKSPACE_POLICY_VIOLATION
+    assert "pyvenv.cfg is missing" in exc.value.message
+
+
+def test_split_command_handles_quoted_python_path_with_spaces() -> None:
+    parts = split_command(r'"C:\Program Files\Python313\python.exe" -m venv')
+
+    assert parts == [r"C:\Program Files\Python313\python.exe", "-m", "venv"]
 
 
 def test_workspace_prepare_mirror_then_from_mirror(tmp_path: Path):
