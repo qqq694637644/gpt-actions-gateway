@@ -90,7 +90,7 @@ WORKSPACE_PYTHON_AUTO_ACTIVATE=true
 WORKSPACE_PYTHON_AUTO_INSTALL=false
 ```
 
-When `WORKSPACE_PYTHON_VENV_ENABLED=true`, `prepareWorkspace` automatically prepares a repository-root Python virtual environment for writable `gpt/*` branches and same-repository PR heads. It writes `.venv/` to `.gitignore` when missing, removes accidentally tracked `.venv` files from the Git index with `git rm --cached` while keeping local files, and creates `.venv` with the configured Python command. `workspaceExecPwsh` then activates the virtual environment by prepending `.venv/Scripts` or `.venv/bin` to `PATH`. Dependency installation is intentionally not automatic unless a future bootstrap flow opts into it.
+When `WORKSPACE_PYTHON_VENV_ENABLED=true`, `prepareWorkspace` automatically prepares a repository-root Python virtual environment for writable `gpt/*` branches and same-repository PR heads. It writes `.venv/` to `.gitignore` when missing, removes accidentally tracked `.venv` files from the Git index with `git rm --cached` while keeping local files, and creates `.venv` with the configured Python command. Existing virtual environments are validated instead of silently accepted. `workspaceExecPwsh` then activates the virtual environment by prepending `.venv/Scripts` or `.venv/bin` to `PATH`; missing, incomplete, or non-executable virtual environments fail before the user script runs. Dependency installation is not implemented yet, so `WORKSPACE_PYTHON_AUTO_INSTALL=true` is rejected until a dependency bootstrap flow is added.
 
 ## Standard workflow
 

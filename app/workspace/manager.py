@@ -269,20 +269,75 @@ class WorkspaceManager:
     async def ensure_python_venv(self, repo_dir: Path) -> None:
         venv_dir = self.settings.workspace_python_venv_dir
         venv_path = repo_dir / venv_dir
-        if venv_path.exists() and not venv_path.is_dir():
-            raise ApiError(
-                ErrorCode.WORKSPACE_POLICY_VIOLATION,
-                "Configured Python virtual environment path exists but is not a directory.",
-                status_code=409,
-                details={"path": venv_dir},
-            )
         if self.settings.workspace_python_auto_gitignore:
             await self.untrack_python_venv(repo_dir)
             self.ensure_python_venv_gitignore(repo_dir)
-        if (venv_path / "pyvenv.cfg").exists():
-            return
-        python_cmd = split_command(self.settings.workspace_python_venv_python)
-        await self.git.run([*python_cmd, "-m", "venv", venv_dir], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        if venv_path.exists():
+            if not venv_path.is_dir():
+                raise ApiError(
+                    ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                    "Configured Python virtual environment path exists but is not a directory.",
+                    status_code=409,
+                    details={"path": venv_dir},
+                )
+            if not (venv_path / "pyvenv.cfg").is_file():
+                raise ApiError(
+                    ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                    "Configured Python virtual environment is incomplete: pyvenv.cfg is missing.",
+                    status_code=409,
+                    details={"path": venv_dir},
+                )
+        else:
+            python_cmd = split_command(self.settings.workspace_python_venv_python)
+            await self.git.run([*python_cmd, "-m", "venv", venv_dir], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+        await self.validate_python_venv(repo_dir)
+
+    async def validate_python_venv(self, repo_dir: Path) -> None:
+        python_path = self.python_venv_executable(repo_dir)
+        try:
+            await self.git.run([str(python_path), "--version"], cwd=repo_dir, timeout=self.settings.workspace_default_timeout_seconds, max_output_bytes=8_000)
+        except ApiError as exc:
+            raise ApiError(
+                ErrorCode.WORKSPACE_EXEC_FAILED,
+                "Workspace Python virtual environment executable failed validation.",
+                status_code=500,
+                details={"path": str(python_path)},
+            ) from exc
+
+    def python_venv_executable(self, repo_dir: Path) -> Path:
+        venv_dir = self.settings.workspace_python_venv_dir
+        venv_path = repo_dir / venv_dir
+        if not venv_path.is_dir():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment directory is missing.",
+                status_code=409,
+                details={"path": venv_dir},
+            )
+        if not (venv_path / "pyvenv.cfg").is_file():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment is incomplete: pyvenv.cfg is missing.",
+                status_code=409,
+                details={"path": venv_dir},
+            )
+        bin_dir = venv_path / ("Scripts" if os.name == "nt" else "bin")
+        python_path = bin_dir / ("python.exe" if os.name == "nt" else "python")
+        if not bin_dir.is_dir():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment is incomplete: interpreter directory is missing.",
+                status_code=409,
+                details={"path": str(bin_dir.relative_to(repo_dir))},
+            )
+        if not python_path.is_file():
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Configured Python virtual environment is incomplete: Python executable is missing.",
+                status_code=409,
+                details={"path": str(python_path.relative_to(repo_dir))},
+            )
+        return python_path
 
     async def untrack_python_venv(self, repo_dir: Path) -> None:
         venv_dir = self.settings.workspace_python_venv_dir
@@ -562,7 +617,15 @@ def split_command(command: str) -> list[str]:
     parts = shlex.split(command, posix=os.name != "nt")
     if not parts:
         raise ApiError(ErrorCode.VALIDATION_ERROR, "Python venv command is empty.", status_code=422)
+    if os.name == "nt":
+        parts = [strip_matching_quotes(part) for part in parts]
     return parts
+
+
+def strip_matching_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def gitignore_contains_entry(text: str, entry: str) -> bool:
