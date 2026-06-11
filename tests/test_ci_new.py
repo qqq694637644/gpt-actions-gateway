@@ -172,7 +172,7 @@ class CIGitHubStub:
 
 
 def make_service(github: CIGitHubStub) -> CIService:
-    settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo", max_log_lines=10)
+    settings = Settings(allowed_repos="acme/demo", max_log_lines=10)
     return CIService(github, Policy(settings), settings)
 
 

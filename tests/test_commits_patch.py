@@ -59,7 +59,6 @@ class PatchGitHubStub:
 
 def make_service(tmp_path, github: PatchGitHubStub, *, allow_delete_files: bool = True) -> CommitService:
     settings = Settings(
-        gpt_action_secret="secret",
         allowed_repos="acme/demo",
         allow_delete_files=allow_delete_files,
         audit_db_url=f"sqlite:///{tmp_path / 'audit.db'}",

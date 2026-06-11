@@ -57,7 +57,7 @@ class RepoGitHubStub:
 
 
 def make_services() -> tuple[RepositoryService, SearchService]:
-    settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo")
+    settings = Settings(allowed_repos="acme/demo")
     policy = Policy(settings)
     github = RepoGitHubStub()
     return RepositoryService(github, policy, settings), SearchService(github, policy, settings)

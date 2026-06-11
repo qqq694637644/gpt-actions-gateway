@@ -57,7 +57,6 @@ def auth_users_json(*users: dict) -> str:
 async def test_gpt_action_secret_no_longer_authenticates(tmp_path) -> None:
     settings = make_settings(
         tmp_path,
-        gpt_action_secret="legacy-admin-secret",
         auth_users_json=auth_users_json(
             {
                 "username": "actual-admin",

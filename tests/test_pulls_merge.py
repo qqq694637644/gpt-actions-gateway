@@ -47,7 +47,7 @@ class MergeGitHubStub:
 
 
 def make_service(github: MergeGitHubStub) -> PullRequestService:
-    settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo")
+    settings = Settings(allowed_repos="acme/demo")
     return PullRequestService(github, Policy(settings))
 
 

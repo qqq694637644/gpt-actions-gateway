@@ -8,7 +8,7 @@ from app.policy.rules import Policy, normalize_path, sanitize_purpose_slug
 
 
 def make_policy(**kwargs) -> Policy:
-    return Policy(Settings(gpt_action_secret="secret", allowed_repos="acme/demo", **kwargs))
+    return Policy(Settings(allowed_repos="acme/demo", **kwargs))
 
 
 def test_normalize_path_rejects_traversal() -> None:
