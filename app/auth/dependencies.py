@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import time
 from collections import defaultdict, deque
 from threading import Lock
@@ -8,23 +7,22 @@ from threading import Lock
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.auth.users import AuthUser, assert_user_authorized, authenticate_token, load_auth_users, set_current_user, token_cache_key
 from app.config.settings import Settings, get_settings
 from app.errors import ApiError, ErrorCode
 
 _bearer = HTTPBearer(auto_error=False)
+_bearer_dependency = Depends(_bearer)
+_settings_dependency = Depends(get_settings)
 _rate_lock = Lock()
 _rate_windows: dict[str, deque[float]] = defaultdict(deque)
 
 
-def _constant_time_member(candidate: str, valid_values: list[str]) -> bool:
-    return any(hmac.compare_digest(candidate, value) for value in valid_values)
-
-
 async def require_auth(
     request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    settings: Settings = Depends(get_settings),
-) -> str:
+    credentials: HTTPAuthorizationCredentials | None = _bearer_dependency,
+    settings: Settings = _settings_dependency,
+) -> AuthUser:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise ApiError(
             ErrorCode.AUTH_FAILED,
@@ -32,26 +30,37 @@ async def require_auth(
             status_code=401,
             suggestion="Send Authorization: Bearer <GPT_ACTION_SECRET>.",
         )
-    if not settings.secrets:
+    users = load_auth_users(settings)
+    if not users:
         raise ApiError(
             ErrorCode.AUTH_FAILED,
-            "Server is missing GPT_ACTION_SECRET configuration.",
+            "Server is missing GPT_ACTION_SECRET or GATEWAY_USERS_JSON configuration.",
             status_code=500,
         )
     token = credentials.credentials.strip()
-    if not _constant_time_member(token, settings.secrets):
+    user = authenticate_token(token, users)
+    if user is None:
         raise ApiError(ErrorCode.AUTH_FAILED, "Invalid bearer token.", status_code=401)
 
-    await enforce_rate_limit(request, token, settings)
-    return token
+    operation_id = _operation_id(request)
+    owner = request.path_params.get("owner")
+    repo = request.path_params.get("repo")
+    assert_user_authorized(user, owner=owner, repo=repo, operation_id=operation_id)
+
+    set_current_user(user)
+    request.state.auth_actor = user.name
+    request.state.auth_user = user.public_metadata()
+
+    await enforce_rate_limit(request, token, user, settings)
+    return user
 
 
-async def enforce_rate_limit(request: Request, token: str, settings: Settings) -> None:
-    limit = max(settings.rate_limit_per_minute, 1)
+async def enforce_rate_limit(request: Request, token: str, user: AuthUser, settings: Settings) -> None:
+    limit = max(user.rate_limit_per_minute or settings.rate_limit_per_minute, 1)
     now = time.monotonic()
     window_start = now - 60.0
     client_host = request.client.host if request.client else "unknown"
-    key = f"{client_host}:{token[:8]}"
+    key = f"{client_host}:{user.name}:{token_cache_key(token)}"
 
     with _rate_lock:
         bucket = _rate_windows[key]
@@ -63,6 +72,12 @@ async def enforce_rate_limit(request: Request, token: str, settings: Settings) -
                 "Rate limit exceeded.",
                 status_code=429,
                 suggestion="Retry after the current one-minute window or increase RATE_LIMIT_PER_MINUTE.",
-                details={"limit_per_minute": limit},
+                details={"actor": user.name, "limit_per_minute": limit},
             )
         bucket.append(now)
+
+
+def _operation_id(request: Request) -> str | None:
+    route = request.scope.get("route")
+    operation_id = getattr(route, "operation_id", None)
+    return str(operation_id) if operation_id else None

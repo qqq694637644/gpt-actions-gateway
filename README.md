@@ -67,6 +67,41 @@ ALLOWED_REPOS=owner/project-a
 WORKSPACE_SHELL=pwsh
 ```
 
+### User authorization
+
+The gateway still accepts `GPT_ACTION_SECRET` for backward compatibility. Each comma-separated secret is treated as a legacy `admin` token.
+
+For per-user controls, set `GATEWAY_USERS_JSON` to a JSON list or object. Each user token maps to an actor, role, optional repository allowlist, optional operation overrides, and optional per-user rate limit:
+
+```bash
+GATEWAY_USERS_JSON='[
+  {
+    "name": "alice",
+    "token": "replace-with-a-long-random-user-token",
+    "role": "maintainer",
+    "allowed_repos": ["owner/project-a"],
+    "allowed_operations": [],
+    "denied_operations": ["mergePullRequest"],
+    "rate_limit_per_minute": 30
+  },
+  {
+    "name": "ci-reader",
+    "token": "replace-with-another-long-random-user-token",
+    "role": "ci",
+    "allowed_repos": ["owner/project-a"]
+  }
+]'
+```
+
+Roles:
+
+- `admin`: can call every operation.
+- `maintainer`: can prepare workspaces, inspect/edit/commit workspace changes, manage GPT work branches, open/update/comment PRs, read CI logs/artifacts, list caches, and rerun CI.
+- `reader`: can prepare/read workspaces, inspect PRs, read CI status/logs/artifacts, and list caches, but cannot write, commit, merge, dispatch workflows, or delete caches.
+- `ci`: can query/read CI, dispatch workflows, and rerun CI.
+
+`allowed_operations` adds operation IDs to the selected role. `denied_operations` always wins and supports exact IDs or shell-style patterns such as `workspace*`. `allowed_repos` supports exact repositories and shell-style patterns such as `owner/*`; when omitted, the user may access any repository permitted by the global `ALLOWED_REPOS` / `ALLOW_ALL_REPOS` policy. Request audit metadata records the authenticated actor without storing bearer tokens.
+
 Important workspace settings:
 
 ```bash

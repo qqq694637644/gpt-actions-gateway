@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     public_base_url: str = "http://localhost:8000"
     gpt_action_secret: str = ""
+    gateway_users_json: str = ""
 
     github_auth_mode: Literal["pat", "github_app"] = "pat"
     github_api_base_url: str = "https://api.github.com"

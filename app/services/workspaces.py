@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from app.auth.users import get_current_actor
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
@@ -450,6 +451,7 @@ class WorkspaceService:
 
     def _audit(self, **kwargs) -> None:
         try:
+            kwargs.setdefault("actor", get_current_actor())
             self.audit.record_workspace_operation(**kwargs)
         except Exception:
             pass
