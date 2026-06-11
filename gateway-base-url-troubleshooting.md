@@ -47,6 +47,6 @@
 
 后续应优先排查：
 
-- GPT Action 是否带了正确的 `Authorization: Bearer <GPT_ACTION_SECRET>`
+- GPT Action 是否带了正确的 `Authorization: Bearer <configured user token>`
 - GPT Action 是否缓存了旧 schema / 旧 server URL
 - 外层代理是否对某些请求做了额外拦截

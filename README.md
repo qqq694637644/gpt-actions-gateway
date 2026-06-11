@@ -60,16 +60,16 @@ Copy `.env.example` to `.env` and set at least:
 ```bash
 APP_ENV=production
 PUBLIC_BASE_URL=https://gateway.example.com
-GPT_ACTION_SECRET=replace-with-a-long-random-secret
 GITHUB_AUTH_MODE=pat
 GITHUB_TOKEN=replace-with-your-github-token
 ALLOWED_REPOS=owner/project-a
 WORKSPACE_SHELL=pwsh
+AUTH_USERS_JSON='{"users":[{"username":"alice","token_sha256":"<sha256-of-user-token>","roles":["maintainer"],"repos":["owner/project-a"]}]}'
 ```
 
 ### User authorization
 
-The gateway still accepts `GPT_ACTION_SECRET` as a legacy admin token for backwards compatibility. For multi-user deployments, set `AUTH_USERS_JSON` to grant each user a token, role, repository scope, and optional operation overrides. Global repository policy still applies, so user access cannot exceed `ALLOWED_REPOS` unless `ALLOW_ALL_REPOS=true`.
+Set `AUTH_USERS_JSON` to grant each user a token, role, repository scope, and optional operation overrides. `GPT_ACTION_SECRET` is no longer accepted as a compatibility admin token. Global repository policy still applies, so user access cannot exceed `ALLOWED_REPOS` unless `ALLOW_ALL_REPOS=true`.
 
 ```bash
 AUTH_USERS_JSON='{
@@ -132,7 +132,7 @@ When `WORKSPACE_PYTHON_VENV_ENABLED=true`, `prepareWorkspace` automatically prep
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/branches/create-work-branch" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "base_ref": "main",
@@ -144,7 +144,7 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/branches/create-work-branch" \
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "branch": "gpt/fix-ci-20260531-ab12cd",
@@ -158,7 +158,7 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare" \
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/exec-pwsh" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "script": "git status --short; Get-Content pyproject.toml; pytest",
@@ -174,7 +174,7 @@ For small auditable edits, use `workspaceApplyPatch` instead of running ad-hoc f
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/apply-patch" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "patch": "*** Begin Patch\n*** Update File: README.md\n@@\n-before\n+after\n*** End Patch\n",
@@ -187,7 +187,7 @@ For a single generated UTF-8 text file, use `workspaceWriteFile`:
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/write-file" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "path": "docs/ci.md",
@@ -204,14 +204,14 @@ Both endpoints only modify the local workspace. They never commit, push, create 
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/status" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"refresh": false}'
 ```
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/diff" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"paths": ["."], "stat_only": false, "max_bytes": 200000}'
 ```
@@ -220,7 +220,7 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/diff" \
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/commit-and-push" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "branch": "gpt/fix-ci-20260531-ab12cd",
@@ -238,7 +238,7 @@ The gateway refuses to publish unless the remote branch head equals `expected_he
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/create" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "head_branch": "gpt/fix-ci-20260531-ab12cd",
@@ -252,7 +252,7 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/create" \
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/merge" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "pr_number": 10,
@@ -268,7 +268,7 @@ The gateway only merges open, non-draft PRs whose head branch is still a `gpt/*`
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/status/query" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"pr_number": 10}'
 ```
@@ -279,7 +279,7 @@ To trigger a `workflow_dispatch` workflow without creating an empty commit, call
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/workflows/dispatch" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "workflow_id": "pascal-ci.yml",
@@ -293,14 +293,14 @@ To rerun CI after runner, network, or cache flakiness, use `rerunWorkflowRun` fo
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/runs/rerun" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"run_id": 123456789, "enable_debug_logging": false}'
 ```
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/jobs/rerun" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"job_id": 987654321, "enable_debug_logging": false}'
 ```
@@ -309,21 +309,21 @@ To inspect and safely clear GitHub Actions caches, list matching caches first, d
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/list" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"key": "ce-lib-", "ref": "refs/heads/gpt/fix-ci-20260531-ab12cd"}'
 ```
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/delete" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"cache_id": 12345, "dry_run": true}'
 ```
 
 ```bash
 curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/delete" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"cache_id": 12345, "dry_run": false, "idempotency_key": "task-delete-cache-12345"}'
 ```

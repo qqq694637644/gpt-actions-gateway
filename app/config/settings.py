@@ -4,7 +4,7 @@ import re
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.auth.authorization import ConfiguredAuthUser, parse_auth_users_json
@@ -47,9 +47,10 @@ def parse_size_to_bytes(value: int | str | None, default: int | None = None) -> 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    _auth_users: list[ConfiguredAuthUser] = PrivateAttr(default_factory=list)
+
     app_env: str = "development"
     public_base_url: str = "http://localhost:8000"
-    gpt_action_secret: str = ""
     auth_users_json: str = ""
 
     github_auth_mode: Literal["pat", "github_app"] = "pat"
@@ -140,18 +141,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_settings(self) -> Settings:
-        parse_auth_users_json(self.auth_users_json)
+        self._auth_users = parse_auth_users_json(self.auth_users_json)
         if self.workspace_python_auto_install:
             raise ValueError("WORKSPACE_PYTHON_AUTO_INSTALL is not implemented; keep it false until dependency bootstrap is added")
         return self
 
     @property
-    def secrets(self) -> list[str]:
-        return parse_csv(self.gpt_action_secret)
-
-    @property
     def auth_users(self) -> list[ConfiguredAuthUser]:
-        return parse_auth_users_json(self.auth_users_json)
+        return list(self._auth_users)
 
     @property
     def allowed_repo_set(self) -> set[str]:

@@ -76,6 +76,13 @@ ROLE_OPERATION_PATTERNS: dict[AuthorizationRole, set[str]] = {
     AuthorizationRole.ADMIN: {"*"},
 }
 
+CLASSIFIED_OPERATION_PATTERNS = frozenset(
+    pattern
+    for role, patterns in ROLE_OPERATION_PATTERNS.items()
+    if role != AuthorizationRole.ADMIN
+    for pattern in patterns
+)
+
 
 class ConfiguredAuthUser(BaseModel):
     username: str = Field(..., min_length=1, max_length=100)
@@ -144,11 +151,10 @@ class AuthenticatedUser:
     repo_patterns: tuple[str, ...] = ()
     operation_patterns: tuple[str, ...] = ()
     denied_operation_patterns: tuple[str, ...] = ()
-    legacy_admin: bool = False
 
     @property
     def is_admin(self) -> bool:
-        return self.legacy_admin or AuthorizationRole.ADMIN in self.roles
+        return AuthorizationRole.ADMIN in self.roles
 
     @property
     def actor(self) -> str:
@@ -166,7 +172,7 @@ class AuthenticatedUser:
 
     def can_run_operation(self, operation_id: str | None) -> bool:
         if not operation_id:
-            return True
+            return False
         if _matches_any(operation_id, self.denied_operation_patterns):
             return False
         if self.is_admin:
@@ -175,9 +181,6 @@ class AuthenticatedUser:
         for role in self.roles:
             role_patterns.update(ROLE_OPERATION_PATTERNS[role])
         return _matches_any(operation_id, tuple(role_patterns)) or _matches_any(operation_id, self.operation_patterns)
-
-
-LEGACY_ADMIN_USER = AuthenticatedUser(username="legacy-admin", roles=(AuthorizationRole.ADMIN,), legacy_admin=True)
 
 
 def token_sha256(token: str) -> str:
@@ -215,10 +218,7 @@ def parse_auth_users_json(raw: str | None) -> list[ConfiguredAuthUser]:
     return users
 
 
-def authenticate_token(token: str, *, legacy_secrets: list[str], auth_users: list[ConfiguredAuthUser]) -> AuthenticatedUser | None:
-    if any(hmac.compare_digest(token, secret) for secret in legacy_secrets):
-        return LEGACY_ADMIN_USER
-
+def authenticate_token(token: str, *, auth_users: list[ConfiguredAuthUser]) -> AuthenticatedUser | None:
     candidate_hash = token_sha256(token)
     for user in auth_users:
         if user.disabled:
@@ -245,15 +245,18 @@ def assert_user_authorized(user: AuthenticatedUser, *, owner: str | None, repo: 
             ErrorCode.AUTHZ_DENIED,
             "User is not authorized for this repository.",
             status_code=403,
-            suggestion="Grant the user a matching repo pattern in AUTH_USERS_JSON or use an admin token.",
+            suggestion="Grant the user a matching repo pattern in AUTH_USERS_JSON or use a configured admin user token.",
             details={"user": user.username, "repo": f"{owner}/{repo}"},
         )
     if not user.can_run_operation(operation_id):
+        suggestion = "Grant a role or explicit operation pattern in AUTH_USERS_JSON."
+        if not operation_id:
+            suggestion = "Protected routes must define an explicit operation_id before they can be authorized."
         raise ApiError(
             ErrorCode.AUTHZ_DENIED,
             "User is not authorized to run this operation.",
             status_code=403,
-            suggestion="Grant a role or explicit operation pattern in AUTH_USERS_JSON.",
+            suggestion=suggestion,
             details={"user": user.username, "operation_id": operation_id},
         )
 

@@ -29,20 +29,20 @@ async def require_auth(
             ErrorCode.AUTH_FAILED,
             "Missing bearer token.",
             status_code=401,
-            suggestion="Send Authorization: Bearer <GPT_ACTION_SECRET or configured user token>.",
+            suggestion="Send Authorization: Bearer <configured user token>.",
         )
     auth_users = settings.auth_users
-    if not settings.secrets and not auth_users:
+    if not auth_users:
         raise ApiError(
             ErrorCode.AUTH_FAILED,
-            "Server is missing GPT_ACTION_SECRET or AUTH_USERS_JSON configuration.",
+            "Server is missing AUTH_USERS_JSON configuration.",
             status_code=500,
         )
     token = credentials.credentials.strip()
     if not token:
         raise ApiError(ErrorCode.AUTH_FAILED, "Invalid bearer token.", status_code=401)
 
-    user = authenticate_token(token, legacy_secrets=settings.secrets, auth_users=auth_users)
+    user = authenticate_token(token, auth_users=auth_users)
     if user is None:
         raise ApiError(ErrorCode.AUTH_FAILED, "Invalid bearer token.", status_code=401)
 
@@ -82,6 +82,4 @@ def _operation_id(request: Request) -> str | None:
     operation_id = getattr(route, "operation_id", None)
     if operation_id:
         return str(operation_id)
-    endpoint = request.scope.get("endpoint")
-    endpoint_name = getattr(endpoint, "__name__", None)
-    return str(endpoint_name) if endpoint_name else None
+    return None
