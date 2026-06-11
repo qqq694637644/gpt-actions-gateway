@@ -67,6 +67,40 @@ ALLOWED_REPOS=owner/project-a
 WORKSPACE_SHELL=pwsh
 ```
 
+### User authorization
+
+The gateway still accepts `GPT_ACTION_SECRET` as a legacy admin token for backwards compatibility. For multi-user deployments, set `AUTH_USERS_JSON` to grant each user a token, role, repository scope, and optional operation overrides. Global repository policy still applies, so user access cannot exceed `ALLOWED_REPOS` unless `ALLOW_ALL_REPOS=true`.
+
+```bash
+AUTH_USERS_JSON='{
+  "users": [
+    {
+      "username": "alice",
+      "token_sha256": "<sha256-of-user-token>",
+      "roles": ["reader"],
+      "repos": ["owner/project-a"]
+    },
+    {
+      "username": "bob",
+      "token_sha256": "<sha256-of-user-token>",
+      "roles": ["writer"],
+      "repos": ["owner/*"],
+      "denied_operations": ["mergePullRequest", "deleteCache"]
+    }
+  ]
+}'
+```
+
+Built-in roles:
+
+- `reader`: workspace status/diff, PR reads, CI/log/artifact/cache reads.
+- `writer`: `reader` plus workspace prepare/exec/edit/commit, branch creation, PR create/update/comment.
+- `ci`: `reader` plus workflow dispatch and reruns.
+- `maintainer`: `writer` plus CI write actions, merge, mirror prepare, and cache delete.
+- `admin`: all operations. If `repos` is omitted, all repositories are authorized at the user layer.
+
+`operations` and `denied_operations` support exact operation IDs or `fnmatch`-style patterns such as `workspace*`.
+
 Important workspace settings:
 
 ```bash

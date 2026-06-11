@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.auth.authorization import ConfiguredAuthUser, parse_auth_users_json
+
 _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?b?)?\s*$", re.IGNORECASE)
 _SIZE_MULTIPLIERS = {
     "": 1,
@@ -48,6 +50,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     public_base_url: str = "http://localhost:8000"
     gpt_action_secret: str = ""
+    auth_users_json: str = ""
 
     github_auth_mode: Literal["pat", "github_app"] = "pat"
     github_api_base_url: str = "https://api.github.com"
@@ -136,7 +139,8 @@ class Settings(BaseSettings):
         return command
 
     @model_validator(mode="after")
-    def _reject_unimplemented_python_auto_install(self) -> Settings:
+    def _validate_settings(self) -> Settings:
+        parse_auth_users_json(self.auth_users_json)
         if self.workspace_python_auto_install:
             raise ValueError("WORKSPACE_PYTHON_AUTO_INSTALL is not implemented; keep it false until dependency bootstrap is added")
         return self
@@ -144,6 +148,10 @@ class Settings(BaseSettings):
     @property
     def secrets(self) -> list[str]:
         return parse_csv(self.gpt_action_secret)
+
+    @property
+    def auth_users(self) -> list[ConfiguredAuthUser]:
+        return parse_auth_users_json(self.auth_users_json)
 
     @property
     def allowed_repo_set(self) -> set[str]:

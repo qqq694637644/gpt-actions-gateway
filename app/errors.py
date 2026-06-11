@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class ErrorCode(StrEnum):
     AUTH_FAILED = "AUTH_FAILED"
+    AUTHZ_DENIED = "AUTHZ_DENIED"
     RATE_LIMITED = "RATE_LIMITED"
     REPO_NOT_ALLOWED = "REPO_NOT_ALLOWED"
     BRANCH_NOT_ALLOWED = "BRANCH_NOT_ALLOWED"

@@ -63,7 +63,17 @@ def create_app() -> FastAPI:
         finally:
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             try:
-                app.state.audit.record_event(request_id=request_id, method=request.method, path=request.url.path, status_code=status_code, metadata={"duration_ms": duration_ms})
+                metadata = {"duration_ms": duration_ms}
+                auth_user = getattr(request.state, "auth_user", None)
+                if auth_user is not None:
+                    metadata.update(
+                        {
+                            "actor": auth_user.actor,
+                            "roles": [role.value for role in auth_user.roles],
+                            "operation_id": getattr(request.state, "operation_id", None),
+                        }
+                    )
+                app.state.audit.record_event(request_id=request_id, method=request.method, path=request.url.path, status_code=status_code, metadata=metadata)
             except Exception:
                 pass
 
