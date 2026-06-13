@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
 import shlex
@@ -18,6 +19,9 @@ from app.policy.rules import Policy, is_sha
 from app.workspace.git import GitRunner, attach_numstat, normalize_git_paths, parse_numstat, parse_porcelain_z
 from app.workspace.ids import WORKSPACE_ID_RE
 from app.workspace.models import MirrorPrepareStats, WorkspaceMeta, WorkspacePrepareStats, load_meta, save_meta
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceManager:
@@ -153,7 +157,16 @@ class WorkspaceManager:
             self.policy.assert_read_ref_allowed(target_ref)
 
         explicit_workspace_id = workspace_id is not None
-        self.prune_expired_workspace_dirs()
+        pruned_count = self.prune_expired_workspace_dirs()
+        logger.warning(
+            "workspace_prune.prepare_triggered ttl_hours=%s pruned_count=%s workspace_id=%s explicit_workspace_id=%s target_ref=%s root=%s",
+            self.settings.workspace_ttl_hours,
+            pruned_count,
+            workspace_id,
+            explicit_workspace_id,
+            target_ref,
+            self.root,
+        )
         if workspace_id is None:
             self._enforce_workspace_count()
             workspace_id = self._new_workspace_id()
@@ -582,21 +595,48 @@ class WorkspaceManager:
     def prune_expired_workspace_dirs(self) -> int:
         ttl_hours = self.settings.workspace_ttl_hours
         if ttl_hours <= 0:
+            logger.warning("workspace_prune.disabled ttl_hours=%s root=%s", ttl_hours, self.root)
             return 0
-        cutoff = time.time() - ttl_hours * 60 * 60
+        now = time.time()
+        cutoff = now - ttl_hours * 60 * 60
         deleted = 0
+        scanned = 0
+        logger.warning("workspace_prune.start ttl_hours=%s cutoff_epoch=%s root=%s", ttl_hours, round(cutoff, 3), self.root)
         for item in self.root.glob("ws_*"):
+            scanned += 1
             if not item.is_dir() or not WORKSPACE_ID_RE.fullmatch(item.name):
+                logger.warning("workspace_prune.skip_invalid name=%s path=%s is_dir=%s", item.name, item, item.is_dir())
                 continue
             if (item / "lock").exists():
+                logger.warning("workspace_prune.skip_locked workspace_id=%s path=%s", item.name, item)
                 continue
             try:
-                if item.stat().st_mtime >= cutoff:
+                mtime = item.stat().st_mtime
+                age_seconds = max(0.0, now - mtime)
+                if mtime >= cutoff:
+                    logger.warning(
+                        "workspace_prune.skip_fresh workspace_id=%s path=%s age_hours=%.2f ttl_hours=%s mtime_epoch=%s",
+                        item.name,
+                        item,
+                        age_seconds / 3600,
+                        ttl_hours,
+                        round(mtime, 3),
+                    )
                     continue
                 shutil.rmtree(item)
                 deleted += 1
+                logger.warning(
+                    "workspace_prune.deleted workspace_id=%s path=%s age_hours=%.2f ttl_hours=%s mtime_epoch=%s",
+                    item.name,
+                    item,
+                    age_seconds / 3600,
+                    ttl_hours,
+                    round(mtime, 3),
+                )
             except OSError:
+                logger.exception("workspace_prune.error workspace_id=%s path=%s", item.name, item)
                 continue
+        logger.warning("workspace_prune.done ttl_hours=%s scanned_count=%s deleted_count=%s root=%s", ttl_hours, scanned, deleted, self.root)
         return deleted
 
     def _enforce_workspace_count(self) -> None:
