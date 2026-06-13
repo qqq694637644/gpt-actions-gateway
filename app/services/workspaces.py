@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -473,8 +474,8 @@ class WorkspaceService:
             )
 
         raw_artifacts, total_count = await self._list_all_run_artifacts(owner, repo, request.run_id)
-        remote_artifacts = _artifact_manifest_inputs(raw_artifacts)
-        remote_fingerprint = canonical_hash({"run_id": request.run_id, "artifacts": remote_artifacts})
+        remote_artifacts = _artifact_manifest_records(raw_artifacts)
+        remote_fingerprint = canonical_hash({"run_id": request.run_id, "artifacts": _artifact_fingerprint_inputs(remote_artifacts)})
 
         repo_dir = self.manager.repo_dir(workspace_id)
         target_dir = repo_dir / _ARTIFACTS_ROOT / "runs" / str(request.run_id)
@@ -498,6 +499,7 @@ class WorkspaceService:
                     name = str(item["name"])
                     destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
                     archive_data = await self.github.download_artifact(owner, repo, artifact_id)
+                    _verify_artifact_digest(archive_data, str(item["digest"]))
                     file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
                     artifacts.append(
                         SyncedRunArtifact(
@@ -632,7 +634,7 @@ class WorkspaceService:
         }
 
 
-def _artifact_manifest_inputs(raw_artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _artifact_manifest_records(raw_artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
     missing_digest: list[dict[str, Any]] = []
     for raw in raw_artifacts:
@@ -663,6 +665,17 @@ def _artifact_manifest_inputs(raw_artifacts: list[dict[str, Any]]) -> list[dict[
             details={"missing_artifacts": missing_digest},
         )
     return sorted(artifacts, key=lambda item: item["artifact_id"])
+
+
+def _artifact_fingerprint_inputs(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "artifact_id": item["artifact_id"],
+            "name": item["name"],
+            "digest": item["digest"],
+        }
+        for item in artifacts
+    ]
 
 
 def _ensure_gpt_artifacts_gitignore(repo_dir: Path) -> bool:
@@ -759,6 +772,25 @@ def _extract_artifact_archive(data: bytes, destination: Path) -> tuple[int, int]
     except zipfile.BadZipFile as exc:
         raise ApiError(ErrorCode.CI_LOG_NOT_READY, "Artifact archive is not a valid zip file.", status_code=502) from exc
     return file_count, bytes_written
+
+
+def _verify_artifact_digest(data: bytes, digest: str) -> None:
+    algorithm, separator, expected = digest.strip().partition(":")
+    if separator != ":" or algorithm.lower() != "sha256" or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+        raise ApiError(
+            ErrorCode.GITHUB_ERROR,
+            "Unsupported artifact digest format; expected sha256:<64 hex>.",
+            status_code=502,
+            details={"digest": digest},
+        )
+    actual = hashlib.sha256(data).hexdigest()
+    if actual.lower() != expected.lower():
+        raise ApiError(
+            ErrorCode.GITHUB_ERROR,
+            "Downloaded artifact digest does not match GitHub digest.",
+            status_code=502,
+            details={"expected_digest": digest, "actual_digest": f"sha256:{actual}"},
+        )
 
 
 def _safe_zip_member_path(filename: str) -> PurePosixPath:
