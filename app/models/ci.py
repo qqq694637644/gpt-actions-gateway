@@ -271,29 +271,6 @@ class ListArtifactsResponse(GatewayBaseModel):
     total_count: int
 
 
-class ReadArtifactTextRequest(GatewayBaseModel):
-    artifact_id: int = Field(ge=1)
-    path: str | None = None
-    max_files: int = Field(default=20, ge=1, le=50)
-    max_bytes_per_file: int | None = Field(default=None, ge=1)
-
-
-class ArtifactTextFile(GatewayBaseModel):
-    path: str
-    name: str
-    content: str
-    size: int
-    truncated: bool = False
-
-
-class ReadArtifactTextResponse(GatewayBaseModel):
-    artifact_id: int
-    files: list[ArtifactTextFile]
-    entries: list[ArtifactTextFile]
-    total_files: int
-    truncated: bool = False
-
-
 class SyncRunArtifactsToWorkspaceRequest(GatewayBaseModel):
     run_id: int = Field(ge=1)
 

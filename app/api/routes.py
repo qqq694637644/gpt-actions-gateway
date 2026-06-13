@@ -30,8 +30,6 @@ from app.models.ci import (
     ListArtifactsResponse,
     ListCachesRequest,
     ListCachesResponse,
-    ReadArtifactTextRequest,
-    ReadArtifactTextResponse,
     RerunWorkflowJobRequest,
     RerunWorkflowJobResponse,
     RerunWorkflowRunRequest,
@@ -414,12 +412,6 @@ async def sync_run_artifacts_to_workspace(
     audit: Annotated[AuditStore, Depends(audit_store)],
 ) -> SyncRunArtifactsToWorkspaceResponse:
     return await WorkspaceService(github, pol, settings, manager, audit).sync_run_artifacts_to_workspace(owner, repo, workspace_id, request)
-
-
-@router.post("/ci/artifacts/read-text", operation_id="readArtifactText", summary="Read text files from an artifact zip", response_model=ReadArtifactTextResponse, include_in_schema=False)
-async def read_artifact_text(owner: str, repo: str, request: ReadArtifactTextRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ReadArtifactTextResponse:
-    return await CIService(github, pol, settings).read_artifact_text(owner, repo, request)
-
 
 @router.post("/ci/caches/list", operation_id="listCaches", summary="List GitHub Actions caches", response_model=ListCachesResponse)
 async def list_caches(owner: str, repo: str, request: ListCachesRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ListCachesResponse:

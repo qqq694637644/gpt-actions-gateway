@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import io
 import zipfile
 from datetime import UTC, datetime
@@ -14,7 +13,6 @@ from app.models.ci import (
     ActionCache,
     Annotation,
     Artifact,
-    ArtifactTextFile,
     CIJob,
     CIRun,
     CIStatusQueryRequest,
@@ -39,8 +37,6 @@ from app.models.ci import (
     ListArtifactsResponse,
     ListCachesRequest,
     ListCachesResponse,
-    ReadArtifactTextRequest,
-    ReadArtifactTextResponse,
     RerunWorkflowJobRequest,
     RerunWorkflowJobResponse,
     RerunWorkflowRunRequest,
@@ -50,22 +46,6 @@ from app.models.ci import (
 )
 from app.policy.rules import Policy, is_sha
 from app.storage.audit import AuditStore, canonical_hash
-
-_TEXT_ARTIFACT_PATTERNS = [
-    "*.txt",
-    "*.log",
-    "*.xml",
-    "*.json",
-    "*.html",
-    "*.htm",
-    "*.md",
-    "*.csv",
-    "*.lcov",
-    "lcov.info",
-    "coverage/**",
-    "junit*.xml",
-    "**/junit*.xml",
-]
 
 
 class CIService:
@@ -361,31 +341,6 @@ class CIService:
         ]
         return ListArtifactsResponse(run_id=request.run_id, artifacts=artifacts, total_count=int(payload.get("total_count") or len(artifacts)))
 
-    async def read_artifact_text(self, owner: str, repo: str, request: ReadArtifactTextRequest) -> ReadArtifactTextResponse:
-        self.policy.assert_repo_allowed(owner, repo)
-        data = await self.github.download_artifact(owner, repo, request.artifact_id)
-        max_bytes = min(request.max_bytes_per_file or self.settings.max_log_bytes, self.settings.max_log_bytes)
-        files: list[ArtifactTextFile] = []
-        truncated = False
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                for info in archive.infolist():
-                    if info.is_dir() or not _artifact_path_matches(info.filename, request.path):
-                        continue
-                    if not _is_text_artifact_path(info.filename):
-                        continue
-                    if len(files) >= request.max_files:
-                        truncated = True
-                        break
-                    raw = archive.read(info.filename)
-                    if b"\x00" in raw[:4096]:
-                        continue
-                    content = raw[:max_bytes].decode("utf-8", errors="replace")
-                    files.append(ArtifactTextFile(path=info.filename, name=info.filename, content=content, size=info.file_size, truncated=info.file_size > max_bytes))
-        except zipfile.BadZipFile as exc:
-            raise ApiError(ErrorCode.CI_LOG_NOT_READY, "Artifact archive is not a valid zip file.", status_code=502) from exc
-        return ReadArtifactTextResponse(artifact_id=request.artifact_id, files=files, entries=files, total_files=len(files), truncated=truncated)
-
     def _assert_ref_allowed(self, ref: str) -> str:
         normalized = ref.strip()
         if not normalized or any(ch.isspace() for ch in normalized):
@@ -664,21 +619,6 @@ def _extract_step_log(raw_log: str, step_name: str) -> str:
     start = max(matches[0] - 5, 0)
     end = min(matches[-1] + 80, len(lines))
     return "\n".join(lines[start:end])
-
-
-def _is_text_artifact_path(path: str) -> bool:
-    lower = path.lower()
-    return any(fnmatch.fnmatchcase(lower, pattern.lower()) for pattern in _TEXT_ARTIFACT_PATTERNS)
-
-
-def _artifact_path_matches(filename: str, requested: str | None) -> bool:
-    if not requested:
-        return True
-    requested = requested.strip()
-    if not requested:
-        return True
-    return filename == requested or filename.startswith(requested.rstrip("/") + "/") or fnmatch.fnmatchcase(filename, requested)
-
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
