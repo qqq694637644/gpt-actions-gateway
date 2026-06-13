@@ -23,12 +23,14 @@ from app.models.workspaces import (
     PrepareWorkspaceRequest,
     WorkspaceApplyPatchRequest,
     WorkspaceCommitAndPushRequest,
+    WorkspaceExecPwshRequest,
     WorkspaceWriteFileRequest,
 )
 from app.policy.rules import Policy
 from app.services.workspaces import WorkspaceService
 from app.storage.audit import AuditStore
 from app.workspace.manager import WorkspaceManager, split_command
+from app.workspace.models import CommandResult
 
 
 class LocalGitHub:
@@ -154,6 +156,43 @@ def make_service(
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def test_exec_pwsh_does_not_collect_workspace_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_exec_fast")))
+
+    async def fail_changed_files(*args, **kwargs):
+        raise AssertionError("workspaceExecPwsh must not call changed_files")
+
+    async def fail_diff_stat(*args, **kwargs):
+        raise AssertionError("workspaceExecPwsh must not call diff_stat")
+
+    class FakeExecutor:
+        async def execute(self, *args, **kwargs):
+            return CommandResult(exit_code=0, stdout="ok\n", stderr="", duration_ms=7, truncated=False)
+
+    monkeypatch.setattr(manager, "changed_files", fail_changed_files)
+    monkeypatch.setattr(manager, "diff_stat", fail_diff_stat)
+    service.executor = FakeExecutor()  # type: ignore[assignment]
+
+    response = run(
+        service.exec_pwsh(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            WorkspaceExecPwshRequest(script="Write-Output ok"),
+        )
+    )
+
+    assert response.model_dump() == {
+        "exit_code": 0,
+        "stdout": "ok\n",
+        "stderr": "",
+        "truncated": False,
+        "duration_ms": 7,
+    }
 
 
 def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_path: Path):
