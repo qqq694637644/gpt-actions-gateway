@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +20,8 @@ class WorkspaceMeta(BaseModel):
     default_branch: str
     head_sha: str
     source_pr_number: int | None = None
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
     def full_name(self) -> str:
@@ -37,7 +37,7 @@ def load_meta(workspace_dir: Path) -> WorkspaceMeta:
 
 
 def save_meta(workspace_dir: Path, meta: WorkspaceMeta) -> None:
-    meta.updated_at = datetime.now(timezone.utc).isoformat()
+    meta.updated_at = datetime.now(UTC).isoformat()
     meta_path(workspace_dir).write_text(meta.model_dump_json(indent=2), encoding="utf-8")
 
 

@@ -4,8 +4,8 @@ import asyncio
 import os
 import signal
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from app.errors import ApiError, ErrorCode
 from app.models.common import ChangedFile
@@ -51,7 +51,7 @@ class GitRunner:
         timed_out = False
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(input_data), timeout=timeout or self.default_timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             timed_out = True
             await kill_process_tree(proc)
             stdout_b, stderr_b = await proc.communicate()

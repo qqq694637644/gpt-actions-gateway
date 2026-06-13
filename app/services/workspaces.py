@@ -16,9 +16,6 @@ from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
 from app.models.ci import SyncedRunArtifact, SyncRunArtifactsToWorkspaceRequest, SyncRunArtifactsToWorkspaceResponse
 from app.models.workspaces import (
-    PrepareWorkspaceFromMirrorRequest,
-    PrepareWorkspaceMirrorRequest,
-    PrepareWorkspaceMirrorResponse,
     PrepareWorkspaceRequest,
     PrepareWorkspaceResponse,
     WorkspaceApplyPatchRequest,
@@ -91,46 +88,6 @@ class WorkspaceService:
         )
         return self._response_from_prepare_result(owner, repo, result)
 
-    async def prepare_from_mirror(self, owner: str, repo: str, request: PrepareWorkspaceFromMirrorRequest) -> PrepareWorkspaceResponse:
-        result = await self.manager.prepare_from_mirror(
-            owner=owner,
-            repo=repo,
-            branch=request.branch,
-            source_pr_number=request.source_pr_number,
-            base_ref=request.base_ref,
-            workspace_id=request.workspace_id,
-            clean=request.clean,
-        )
-        self._audit(
-            operation_id="prepareWorkspaceFromMirror",
-            owner=owner,
-            repo=repo,
-            workspace_id=result.meta.workspace_id,
-            branch=result.meta.branch,
-            head_sha_after=result.meta.head_sha,
-            changed_files=[item.model_dump() for item in result.changed_files],
-            metadata=self._prepare_metadata(result),
-        )
-        return self._response_from_prepare_result(owner, repo, result)
-
-    async def prepare_mirror(self, owner: str, repo: str, request: PrepareWorkspaceMirrorRequest) -> PrepareWorkspaceMirrorResponse:
-        result = await self.manager.prepare_mirror(owner, repo, refresh=request.refresh)
-        diagnostics = WorkspacePrepareDiagnostics(
-            mirror_stage=result.stage,
-            mirror_duration_ms=result.duration_ms,
-            mirror_pack_bytes=result.pack_bytes,
-            mirror_pack_files=result.pack_files,
-            workspace_stage="skip",
-            workspace_duration_ms=0,
-            total_duration_ms=result.duration_ms,
-        )
-        self._audit(
-            operation_id="prepareWorkspaceMirror",
-            owner=owner,
-            repo=repo,
-            metadata={"mirror": asdict(result)},
-        )
-        return PrepareWorkspaceMirrorResponse(owner=owner, repo=repo, refreshed=result.refreshed, diagnostics=diagnostics)
 
     async def exec_pwsh(self, owner: str, repo: str, workspace_id: str, request: WorkspaceExecPwshRequest) -> WorkspaceExecPwshResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)
@@ -157,7 +114,6 @@ class WorkspaceService:
             workspace_id=workspace_id,
             branch=meta.branch,
             head_sha_before=meta.head_sha,
-            changed_files=[],
             command_hash=command_hash(request.script),
             exit_code=result.exit_code,
             duration_ms=result.duration_ms,

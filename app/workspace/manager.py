@@ -89,36 +89,8 @@ class WorkspaceManager:
             workspace_id=workspace_id,
             refresh=refresh,
             clean=clean,
-            ensure_mirror=True,
         )
 
-    async def prepare_from_mirror(
-        self,
-        *,
-        owner: str,
-        repo: str,
-        branch: str | None,
-        source_pr_number: int | None,
-        base_ref: str | None,
-        workspace_id: str | None,
-        clean: bool,
-    ) -> WorkspacePrepareStats:
-        return await self._prepare_workspace(
-            owner=owner,
-            repo=repo,
-            branch=branch,
-            source_pr_number=source_pr_number,
-            base_ref=base_ref,
-            workspace_id=workspace_id,
-            refresh=False,
-            clean=clean,
-            ensure_mirror=False,
-        )
-
-    async def prepare_mirror(self, owner: str, repo: str, *, refresh: bool) -> MirrorPrepareStats:
-        self.policy.assert_repo_allowed(owner, repo)
-        await self.github.get_repository(owner, repo)
-        return await self._ensure_mirror(owner, repo, refresh=refresh)
 
     async def _prepare_workspace(
         self,
@@ -131,7 +103,6 @@ class WorkspaceManager:
         workspace_id: str | None,
         refresh: bool,
         clean: bool,
-        ensure_mirror: bool,
     ) -> WorkspacePrepareStats:
         self.policy.assert_repo_allowed(owner, repo)
         selected = [branch is not None, source_pr_number is not None, base_ref is not None]
@@ -195,13 +166,7 @@ class WorkspaceManager:
                     head_sha="",
                     source_pr_number=source_pr_number,
                 )
-            if ensure_mirror:
-                mirror_stats = await self._ensure_mirror(owner, repo, refresh=refresh)
-            else:
-                if not self._mirror_path(owner, repo).exists():
-                    raise ApiError(ErrorCode.WORKSPACE_NOT_FOUND, "Mirror was not prepared. Call prepareWorkspaceMirror first.", status_code=404, details={"owner": owner, "repo": repo})
-                pack_bytes, pack_files = self._mirror_stats(owner, repo)
-                mirror_stats = MirrorPrepareStats(stage="reuse", duration_ms=0, pack_bytes=pack_bytes, pack_files=pack_files, refreshed=False)
+            mirror_stats = await self._ensure_mirror(owner, repo, refresh=refresh)
             workspace_start = time.perf_counter()
             if not repo_dir.exists():
                 workspace_stage = "clone"
@@ -209,17 +174,12 @@ class WorkspaceManager:
             else:
                 workspace_stage = "reuse"
                 await self._ensure_origin(owner, repo, repo_dir)
-            refreshed = bool(ensure_mirror and refresh)
+            refreshed = bool(refresh)
             if refreshed:
                 await self.fetch_branch(repo_dir, target_ref)
-            elif not ensure_mirror and repo_dir.exists():
-                await self.fetch_branch_from_mirror(repo_dir, owner, repo, target_ref)
             await self.checkout_ref(repo_dir, target_ref)
-            if ensure_mirror:
-                if clean:
-                    await self.reset_to_remote(repo_dir, target_ref, clean_untracked=True)
-            elif clean:
-                await self.reset_to_cached_remote(repo_dir, target_ref, clean_untracked=True)
+            if clean:
+                await self.reset_to_remote(repo_dir, target_ref, clean_untracked=True)
             if self.should_use_python_venv(target_ref, source_pr_number=source_pr_number):
                 await self.ensure_python_venv(repo_dir)
             workspace_duration_ms = round((time.perf_counter() - workspace_start) * 1000)
@@ -385,13 +345,6 @@ class WorkspaceManager:
         else:
             await self.git.run(["git", *auth_config, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
 
-    async def fetch_branch_from_mirror(self, repo_dir: Path, owner: str, repo: str, branch: str) -> None:
-        mirror = self._mirror_path(owner, repo)
-        if is_sha(branch):
-            await self.git.run(["git", "fetch", str(mirror), branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-        else:
-            await self.git.run(["git", "fetch", str(mirror), f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-
     async def checkout_ref(self, repo_dir: Path, ref: str) -> None:
         if is_sha(ref):
             await self.git.run(["git", "checkout", "--detach", ref], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
@@ -403,18 +356,6 @@ class WorkspaceManager:
             await self.git.run(["git", "reset", "--hard", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         else:
             await self.fetch_branch(repo_dir, branch)
-            await self.git.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-        removed: list[str] = []
-        if clean_untracked:
-            before = await self.untracked_files(repo_dir)
-            await self.git.run(["git", "clean", "-fd"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-            removed = before
-        return removed
-
-    async def reset_to_cached_remote(self, repo_dir: Path, branch: str, *, clean_untracked: bool) -> list[str]:
-        if is_sha(branch):
-            await self.git.run(["git", "reset", "--hard", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-        else:
             await self.git.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         removed: list[str] = []
         if clean_untracked:

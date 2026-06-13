@@ -9,7 +9,7 @@ from app.auth.dependencies import require_auth
 from app.config.settings import Settings, get_settings
 from app.errors import ErrorResponse
 from app.github.client import GitHubClient
-from app.models.branches import ContinueWorkBranchRequest, ContinueWorkBranchResponse, CreateWorkBranchRequest, CreateWorkBranchResponse
+from app.models.branches import CreateWorkBranchRequest, CreateWorkBranchResponse
 from app.models.ci import (
     CIStatusQueryRequest,
     CIStatusResponse,
@@ -55,9 +55,6 @@ from app.models.pulls import (
     UpdatePullRequestResponse,
 )
 from app.models.workspaces import (
-    PrepareWorkspaceFromMirrorRequest,
-    PrepareWorkspaceMirrorRequest,
-    PrepareWorkspaceMirrorResponse,
     PrepareWorkspaceRequest,
     PrepareWorkspaceResponse,
     WorkspaceApplyPatchRequest,
@@ -117,34 +114,6 @@ async def prepare_workspace(
     audit: Annotated[AuditStore, Depends(audit_store)],
 ) -> PrepareWorkspaceResponse:
     return await WorkspaceService(github, pol, settings, manager, audit).prepare(owner, repo, request)
-
-
-@router.post("/workspaces/prepare-mirror", operation_id="prepareWorkspaceMirror", summary="Prepare or refresh the backend Git mirror", response_model=PrepareWorkspaceMirrorResponse, include_in_schema=False)
-async def prepare_workspace_mirror(
-    owner: str,
-    repo: str,
-    request: PrepareWorkspaceMirrorRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
-    pol: Annotated[Policy, Depends(policy)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
-    audit: Annotated[AuditStore, Depends(audit_store)],
-) -> PrepareWorkspaceMirrorResponse:
-    return await WorkspaceService(github, pol, settings, manager, audit).prepare_mirror(owner, repo, request)
-
-
-@router.post("/workspaces/prepare-from-mirror", operation_id="prepareWorkspaceFromMirror", summary="Prepare a backend Git workspace from an existing mirror", response_model=PrepareWorkspaceResponse, include_in_schema=False)
-async def prepare_workspace_from_mirror(
-    owner: str,
-    repo: str,
-    request: PrepareWorkspaceFromMirrorRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
-    pol: Annotated[Policy, Depends(policy)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
-    audit: Annotated[AuditStore, Depends(audit_store)],
-) -> PrepareWorkspaceResponse:
-    return await WorkspaceService(github, pol, settings, manager, audit).prepare_from_mirror(owner, repo, request)
 
 
 @router.post("/workspaces/{workspace_id}/exec-pwsh", operation_id="workspaceExecPwsh", summary="Run controlled PowerShell in a workspace", response_model=WorkspaceExecPwshResponse)
@@ -263,19 +232,6 @@ async def create_work_branch(
     audit: Annotated[AuditStore, Depends(audit_store)],
 ) -> CreateWorkBranchResponse:
     return await BranchService(github, pol, settings, audit).create_work_branch(owner, repo, request)
-
-
-@router.post("/branches/continue-work-branch", operation_id="continueWorkBranch", summary="Continue an existing gpt/* work branch", response_model=ContinueWorkBranchResponse, include_in_schema=False)
-async def continue_work_branch(
-    owner: str,
-    repo: str,
-    request: ContinueWorkBranchRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
-    pol: Annotated[Policy, Depends(policy)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    audit: Annotated[AuditStore, Depends(audit_store)],
-) -> ContinueWorkBranchResponse:
-    return await BranchService(github, pol, settings, audit).continue_work_branch(owner, repo, request)
 
 
 @router.post("/pulls/create", operation_id="createPullRequest", summary="Create or reuse an open pull request", response_model=CreatePullRequestResponse)

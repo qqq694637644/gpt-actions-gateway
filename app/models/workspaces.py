@@ -20,12 +20,6 @@ class PrepareWorkspaceRequest(PrepareWorkspaceBaseRequest):
     clean: bool = False
 
 
-class PrepareWorkspaceFromMirrorRequest(PrepareWorkspaceBaseRequest):
-    clean: bool = False
-
-
-class PrepareWorkspaceMirrorRequest(IdempotentRequest):
-    refresh: bool = True
 
 
 class WorkspacePrepareDiagnostics(GatewayBaseModel):
@@ -52,12 +46,6 @@ class PrepareWorkspaceResponse(GatewayBaseModel):
     refreshed: bool
     diagnostics: WorkspacePrepareDiagnostics
 
-
-class PrepareWorkspaceMirrorResponse(GatewayBaseModel):
-    owner: str
-    repo: str
-    refreshed: bool
-    diagnostics: WorkspacePrepareDiagnostics
 
 
 class WorkspaceExecPwshRequest(GatewayBaseModel):

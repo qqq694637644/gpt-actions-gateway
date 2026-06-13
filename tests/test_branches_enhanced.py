@@ -4,7 +4,7 @@ import asyncio
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.models.branches import ContinueWorkBranchRequest, CreateWorkBranchRequest
+from app.models.branches import CreateWorkBranchRequest
 from app.policy.rules import Policy
 from app.services.branches import BranchService
 
@@ -84,12 +84,3 @@ def test_create_work_branch_can_use_arbitrary_existing_branch_as_base() -> None:
     assert response.base_ref == "feature/parent"
     assert response.base_sha == MAIN_SHA
     assert response.head_sha == MAIN_SHA
-
-
-def test_continue_work_branch_is_still_available_as_backend_compatibility() -> None:
-    service = make_service()
-
-    continued = asyncio.run(service.continue_work_branch("acme", "demo", ContinueWorkBranchRequest(branch="gpt/existing")))
-
-    assert continued.head_sha == GPT_SHA
-    assert continued.protected is False

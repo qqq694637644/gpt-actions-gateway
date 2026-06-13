@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from app.config.settings import Settings
 from app.models.branches import CreateWorkBranchRequest
-from app.models.workspaces import PrepareWorkspaceFromMirrorRequest, PrepareWorkspaceRequest
+from app.models.workspaces import PrepareWorkspaceRequest
 from app.workspace.ids import WORKSPACE_ID_PATTERN
 
 
@@ -25,6 +25,7 @@ def test_removed_settings_are_not_present(tmp_path):
         "enable_debug_routes",
         "base_branch_allowlist",
         "base_branch_patterns",
+        "excluded_tree_dirs",
     ]
     for name in removed:
         assert not hasattr(settings, name)
@@ -43,10 +44,6 @@ def test_prepare_workspace_request_workspace_id_schema_requires_ws_prefix():
     string_branch = next(item for item in workspace_id["anyOf"] if item.get("type") == "string")
     assert string_branch["pattern"] == WORKSPACE_ID_PATTERN
 
-    mirror_schema = PrepareWorkspaceFromMirrorRequest.model_json_schema()
-    mirror_workspace_id = mirror_schema["properties"]["workspace_id"]
-    mirror_string_branch = next(item for item in mirror_workspace_id["anyOf"] if item.get("type") == "string")
-    assert mirror_string_branch["pattern"] == WORKSPACE_ID_PATTERN
 
 
 @pytest.mark.parametrize(
