@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from app.models.common import GatewayBaseModel, IdempotentRequest
+from app.models.common import ChangedFile, GatewayBaseModel, IdempotentRequest
 
 
 class CIStep(GatewayBaseModel):
@@ -164,7 +164,7 @@ class DeleteCacheRequest(IdempotentRequest):
     max_delete: int = Field(default=1, ge=1, le=100)
 
     @model_validator(mode="after")
-    def _require_one_selector(self) -> "DeleteCacheRequest":
+    def _require_one_selector(self) -> DeleteCacheRequest:
         if (self.cache_id is None) == (not self.key):
             raise ValueError("Provide exactly one of cache_id or key.")
         return self
@@ -253,6 +253,7 @@ class Artifact(GatewayBaseModel):
     name: str
     size_in_bytes: int | None = None
     archive_download_url: str | None = None
+    digest: str | None = None
     expired: bool | None = None
     created_at: str | None = None
     expires_at: str | None = None
@@ -291,3 +292,34 @@ class ReadArtifactTextResponse(GatewayBaseModel):
     entries: list[ArtifactTextFile]
     total_files: int
     truncated: bool = False
+
+
+class SyncRunArtifactsToWorkspaceRequest(GatewayBaseModel):
+    run_id: int = Field(ge=1)
+
+
+class SyncedRunArtifact(GatewayBaseModel):
+    artifact_id: int
+    name: str
+    digest: str
+    destination_dir: str
+    file_count: int
+    bytes_written: int
+
+
+class SyncRunArtifactsToWorkspaceResponse(GatewayBaseModel):
+    workspace_id: str
+    run_id: int
+    run_attempt: int | None = None
+    target_dir: str
+    manifest_path: str
+    remote_fingerprint: str
+    downloaded: bool
+    skipped: bool
+    gitignore_path: str
+    gitignore_updated: bool
+    artifacts: list[SyncedRunArtifact]
+    total_count: int
+    changed_files: list[ChangedFile] = Field(default_factory=list)
+    diff_stat: str = ""
+    warning: str | None = None

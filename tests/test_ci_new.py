@@ -138,6 +138,7 @@ class CIGitHubStub:
                     "name": "reports",
                     "size_in_bytes": 123,
                     "archive_download_url": "https://github.test/artifacts/55/zip",
+                    "digest": "sha256:reports",
                     "expired": False,
                     "created_at": "2026-05-30T00:00:00Z",
                     "expires_at": "2026-06-30T00:00:00Z",

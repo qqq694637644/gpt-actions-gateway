@@ -32,7 +32,7 @@
 - Workspace: `prepareWorkspace`, `workspaceExecPwsh`, `workspaceStatus`, `workspaceDiff`, `workspaceApplyPatch`, `workspaceWriteFile`, `workspaceCommitAndPush`, `workspaceReset`
 - Branch: `createWorkBranch`
 - Pull Request: `createPullRequest`, `getPullRequest`, `listPullRequests`, `getPullRequestFiles`, `updatePullRequest`, `mergePullRequest`, `commentPullRequest`
-- CI, logs, artifacts, workflow, cache: `queryCiStatus`, `dispatchWorkflow`, `queryFailedCiLog`, `getCiRun`, `rerunWorkflowRun`, `getCiJobs`, `rerunWorkflowJob`, `getJobLog`, `getRunLog`, `listArtifacts`, `readArtifactText`, `listCaches`, `deleteCache`
+- CI, logs, artifacts, workflow, cache: `queryCiStatus`, `dispatchWorkflow`, `queryFailedCiLog`, `getCiRun`, `rerunWorkflowRun`, `getCiJobs`, `rerunWorkflowJob`, `getJobLog`, `getRunLog`, `listArtifacts`, `syncRunArtifactsToWorkspace`, `listCaches`, `deleteCache`
 
 `workspaceExecPwsh` 是仓库内阅读文件、搜索内容、理解项目结构、运行本地验证的默认入口。它从仓库根目录运行，不持有 GitHub 发布凭据，不应用于发布代码。
 
@@ -107,10 +107,10 @@ queryCiStatus(pr_number=<pr_number> 或 commit_sha=<commit_sha>)
 ```text
 queryCiStatus
 queryFailedCiLog
-getJobLog / getRunLog / readArtifactText
+getJobLog / getRunLog / syncRunArtifactsToWorkspace
 prepareWorkspace(source_pr_number=<pr_number> 或 branch=<branch>, workspace_id="ws_<task>")
 workspaceStatus 确认最新 head_sha/remote_head_sha
-workspaceExecPwsh 搜索、读取相关文件、定位和复现
+workspaceExecPwsh 搜索、读取相关文件、`.gpt-artifacts/`、定位和复现
 workspaceApplyPatch 或 workspaceWriteFile 修复
 workspaceExecPwsh 运行相关验证
 workspaceDiff 审核改动

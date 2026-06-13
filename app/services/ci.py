@@ -3,7 +3,7 @@ from __future__ import annotations
 import fnmatch
 import io
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.ci.logs import parse_failed_log
@@ -11,21 +11,22 @@ from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
 from app.models.ci import (
-    Annotation,
     ActionCache,
+    Annotation,
     Artifact,
     ArtifactTextFile,
     CIJob,
     CIRun,
-    CIStep,
     CIStatusQueryRequest,
     CIStatusResponse,
+    CIStep,
     DeleteCacheRequest,
     DeleteCacheResponse,
     DispatchWorkflowRequest,
     DispatchWorkflowResponse,
     FailedCILogResponse,
     FailedJobLog,
+    FailedLogQueryRequest,
     FailedStep,
     GetCiJobsRequest,
     GetCiJobsResponse,
@@ -350,6 +351,7 @@ class CIService:
                 name=item.get("name", ""),
                 size_in_bytes=item.get("size_in_bytes"),
                 archive_download_url=item.get("archive_download_url"),
+                digest=item.get("digest"),
                 expired=item.get("expired"),
                 created_at=item.get("created_at"),
                 expires_at=item.get("expires_at"),
@@ -679,4 +681,4 @@ def _artifact_path_matches(filename: str, requested: str | None) -> bool:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
