@@ -34,7 +34,7 @@ class CIJob(GatewayBaseModel):
     failed_steps: list[FailedStep] = Field(default_factory=list)
 
 
-class CIRun(GatewayBaseModel):
+class CIRunSummary(GatewayBaseModel):
     run_id: int
     run_attempt: int | None = None
     workflow_id: int | str | None = None
@@ -47,7 +47,10 @@ class CIRun(GatewayBaseModel):
     run_url: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
-    jobs: list[CIJob] = Field(default_factory=list)
+
+
+class CIRun(CIRunSummary):
+    jobs: list[CIJob] | None = None
 
 
 class CIStatusQueryRequest(GatewayBaseModel):
@@ -63,7 +66,7 @@ class CIStatusResponse(GatewayBaseModel):
     matched_by: str
     status: str
     conclusion: str | None = None
-    workflow_runs: list[CIRun]
+    workflow_runs: list[CIRunSummary]
     warning: str | None = None
 
 
@@ -172,9 +175,11 @@ class DeleteCacheRequest(IdempotentRequest):
 class DeleteCacheResponse(GatewayBaseModel):
     deleted: bool
     dry_run: bool
-    matched_count: int
+    requested_count: int
+    selected_count: int
     deleted_count: int
-    deleted_caches: list[ActionCache]
+    requested_caches: list[ActionCache] = Field(default_factory=list)
+    selected_caches: list[ActionCache] = Field(default_factory=list)
     warning: str | None = None
 
 

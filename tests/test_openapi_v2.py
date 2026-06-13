@@ -35,6 +35,20 @@ def test_hidden_and_removed_operation_ids_are_absent():
     assert collect_operation_ids(schema).isdisjoint(hidden_or_removed)
 
 
+def test_hidden_workspace_branch_routes_are_not_registered():
+    removed_paths = {
+        "/repos/{owner}/{repo}/workspaces/prepare-mirror",
+        "/repos/{owner}/{repo}/workspaces/prepare-from-mirror",
+        "/repos/{owner}/{repo}/branches/continue-work-branch",
+    }
+    removed_names = {"prepare_workspace_mirror", "prepare_workspace_from_mirror", "continue_work_branch"}
+    route_paths = {getattr(route, "path", "") for route in app.routes}
+    route_names = {getattr(route, "name", "") for route in app.routes}
+
+    assert route_paths.isdisjoint(removed_paths)
+    assert route_names.isdisjoint(removed_names)
+
+
 def test_export_marks_all_public_operations_nonconsequential():
     schema = app.openapi()
 
@@ -58,7 +72,7 @@ def test_workspace_exec_pwsh_response_excludes_workspace_change_summary():
     assert "diff_stat" not in properties
 
 
-def _schema_properties(schema: dict, path: str, operation: str) -> set[str]:
+def _schema_properties(schema: dict, path: str) -> set[str]:
     response_schema = schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
     schema_name = response_schema["$ref"].rsplit("/", 1)[-1]
     return set(schema["components"]["schemas"][schema_name]["properties"])
@@ -67,23 +81,39 @@ def _schema_properties(schema: dict, path: str, operation: str) -> set[str]:
 def test_workspace_responses_exclude_implicit_state_fields():
     schema = app.openapi()
 
-    assert "dirty" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/prepare", "prepareWorkspace")
-    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/prepare", "prepareWorkspace")
-    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/diff", "workspaceDiff")
-    assert "dirty" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/reset", "workspaceReset")
-    assert "truncated" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/apply-patch", "workspaceApplyPatch")
-    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run", "syncRunArtifactsToWorkspace")
-    assert "diff_stat" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run", "syncRunArtifactsToWorkspace")
-    assert "commit_url" not in _schema_properties(schema, "/repos/{owner}/{repo}/branches/create-work-branch", "createWorkBranch")
+    assert "dirty" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/prepare")
+    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/prepare")
+    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/diff")
+    assert "dirty" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/reset")
+    assert "truncated" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/apply-patch")
+    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run")
+    assert "diff_stat" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run")
+    assert "commit_url" not in _schema_properties(schema, "/repos/{owner}/{repo}/branches/create-work-branch")
 
 
 def test_ci_responses_exclude_duplicate_log_aliases():
     schema = app.openapi()
 
-    assert "workflow_run" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/runs/get", "getCiRun")
-    assert "log" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/jobs/log", "getJobLog")
-    assert "entries" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/runs/log", "getRunLog")
+    assert "workflow_run" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/runs/get")
+    assert "log" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/jobs/log")
+    assert "entries" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/runs/log")
 
     run_log_file = schema["components"]["schemas"]["RunLogFile"]["properties"]
     assert "log" not in run_log_file
     assert "log_excerpt" in run_log_file
+
+
+def test_ci_status_runs_exclude_jobs_and_cache_delete_uses_precise_counts():
+    schema = app.openapi()
+    ci_status = schema["components"]["schemas"]["CIStatusResponse"]["properties"]
+    workflow_run_schema = ci_status["workflow_runs"]["items"]["$ref"].rsplit("/", 1)[-1]
+    run_summary = schema["components"]["schemas"][workflow_run_schema]["properties"]
+    ci_run = schema["components"]["schemas"]["CIRun"]["properties"]
+    delete_cache = _schema_properties(schema, "/repos/{owner}/{repo}/ci/caches/delete")
+
+    assert workflow_run_schema == "CIRunSummary"
+    assert "jobs" not in run_summary
+    assert "jobs" in ci_run
+    assert "matched_count" not in delete_cache
+    assert "deleted_caches" not in delete_cache
+    assert {"requested_count", "selected_count", "deleted_count", "requested_caches", "selected_caches"} <= delete_cache
