@@ -6,8 +6,9 @@ import os
 import secrets
 import shlex
 import shutil
+import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -19,7 +20,6 @@ from app.policy.rules import Policy, is_sha
 from app.workspace.git import GitRunner, attach_numstat, normalize_git_paths, parse_numstat, parse_porcelain_z
 from app.workspace.ids import WORKSPACE_ID_RE
 from app.workspace.models import MirrorPrepareStats, WorkspaceMeta, WorkspacePrepareStats, load_meta, save_meta
-
 
 logger = logging.getLogger(__name__)
 
@@ -623,7 +623,7 @@ class WorkspaceManager:
                         round(mtime, 3),
                     )
                     continue
-                shutil.rmtree(item)
+                _remove_tree(item)
                 deleted += 1
                 logger.warning(
                     "workspace_prune.deleted workspace_id=%s path=%s age_hours=%.2f ttl_hours=%s mtime_epoch=%s",
@@ -651,6 +651,20 @@ def _path_is_selected(path: str, selectors: list[str]) -> bool:
     if "." in selectors:
         return True
     return any(path == selector or path.startswith(selector.rstrip("/") + "/") for selector in selectors)
+
+
+def _remove_tree(path: Path) -> None:
+    shutil.rmtree(path, onerror=_make_tree_entry_writable_and_retry)
+
+
+def _make_tree_entry_writable_and_retry(func: Callable[[str], object], path: str, exc_info: object) -> None:
+    del exc_info
+    try:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        logger.warning("workspace_prune.retry_writable path=%s", path)
+        func(path)
+    except OSError:
+        raise
 
 
 def split_command(command: str) -> list[str]:
