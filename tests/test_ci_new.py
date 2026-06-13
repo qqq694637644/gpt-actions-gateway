@@ -39,6 +39,8 @@ class CIGitHubStub:
         self.rerun_runs: list[tuple[int, bool]] = []
         self.rerun_jobs: list[tuple[int, bool]] = []
         self.deleted_caches: list[int] = []
+        self.job_list_calls: list[tuple[int, int | None]] = []
+        self.cache_list_calls: list[dict | None] = []
         self.run_zip = make_zip({"job1/1_build.txt": "build ok\nwarning\n", "job2/test.log": "tests passed\n"})
         self.artifact_zip = make_zip({"junit.xml": "<testsuite tests='1'/>\n", "image.png": "not really png"})
 
@@ -62,6 +64,7 @@ class CIGitHubStub:
         }
 
     async def list_jobs_for_run(self, owner: str, repo: str, run_id: int, *, run_attempt: int | None = None) -> dict:
+        self.job_list_calls.append((run_id, run_attempt))
         return {
             "jobs": [
                 {
@@ -149,6 +152,7 @@ class CIGitHubStub:
         return self.artifact_zip
 
     async def list_actions_caches(self, owner: str, repo: str, *, params: dict | None = None) -> dict:
+        self.cache_list_calls.append(params)
         key = (params or {}).get("key")
         caches = [
             {
@@ -230,6 +234,8 @@ def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
     assert dispatch.query_hint["workflow_id"] == "ci.yml"
     assert status.matched_by == "workflow_id"
     assert status.conclusion == "success"
+    assert status.workflow_runs[0].jobs == []
+    assert github.job_list_calls == []
 
 
 def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -> None:
@@ -241,6 +247,10 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
 
     assert default_dry_run.dry_run is True
     assert default_dry_run.deleted is False
+    assert default_dry_run.matched_count == 1
+    assert default_dry_run.deleted_caches[0].cache_id == 101
+    assert default_dry_run.warning == "Dry run only; cache metadata was not fetched. Use listCaches to inspect metadata."
+    assert github.cache_list_calls == []
     assert github.deleted_caches == []
     assert missing.matched_count == 0
     assert missing.deleted_caches == []
@@ -250,6 +260,7 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
 
     assert direct_delete.deleted is True
     assert direct_delete.deleted_caches[0].cache_id == 202
+    assert github.cache_list_calls == []
     assert github.deleted_caches == [202]
 
 
