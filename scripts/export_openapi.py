@@ -36,7 +36,7 @@ PUBLIC_OPERATION_IDS = {
     "getJobLog",
     "getRunLog",
     "listArtifacts",
-    "readArtifactText",
+    "syncRunArtifactsToWorkspace",
     "listCaches",
     "deleteCache",
 }

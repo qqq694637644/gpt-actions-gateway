@@ -30,13 +30,13 @@ from app.models.ci import (
     ListArtifactsResponse,
     ListCachesRequest,
     ListCachesResponse,
-    ReadArtifactTextRequest,
-    ReadArtifactTextResponse,
     RerunWorkflowJobRequest,
     RerunWorkflowJobResponse,
     RerunWorkflowRunRequest,
     RerunWorkflowRunResponse,
     RunLogResponse,
+    SyncRunArtifactsToWorkspaceRequest,
+    SyncRunArtifactsToWorkspaceResponse,
 )
 from app.models.pulls import (
     CommentPullRequestRequest,
@@ -394,10 +394,24 @@ async def list_artifacts(owner: str, repo: str, request: ListArtifactsRequest, g
     return await CIService(github, pol, settings).list_artifacts(owner, repo, request)
 
 
-@router.post("/ci/artifacts/read-text", operation_id="readArtifactText", summary="Read text files from an artifact zip", response_model=ReadArtifactTextResponse)
-async def read_artifact_text(owner: str, repo: str, request: ReadArtifactTextRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ReadArtifactTextResponse:
-    return await CIService(github, pol, settings).read_artifact_text(owner, repo, request)
-
+@router.post(
+    "/workspaces/{workspace_id}/artifacts/sync-run",
+    operation_id="syncRunArtifactsToWorkspace",
+    summary="Sync workflow run artifacts into a workspace",
+    response_model=SyncRunArtifactsToWorkspaceResponse,
+)
+async def sync_run_artifacts_to_workspace(
+    owner: str,
+    repo: str,
+    workspace_id: str,
+    request: SyncRunArtifactsToWorkspaceRequest,
+    github: Annotated[GitHubClient, Depends(github_client)],
+    pol: Annotated[Policy, Depends(policy)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
+    audit: Annotated[AuditStore, Depends(audit_store)],
+) -> SyncRunArtifactsToWorkspaceResponse:
+    return await WorkspaceService(github, pol, settings, manager, audit).sync_run_artifacts_to_workspace(owner, repo, workspace_id, request)
 
 @router.post("/ci/caches/list", operation_id="listCaches", summary="List GitHub Actions caches", response_model=ListCachesResponse)
 async def list_caches(owner: str, repo: str, request: ListCachesRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ListCachesResponse:

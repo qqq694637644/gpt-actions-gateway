@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import io
+import json
 import os
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
+from app.models.ci import SyncRunArtifactsToWorkspaceRequest
 from app.models.workspaces import (
     PrepareWorkspaceFromMirrorRequest,
     PrepareWorkspaceMirrorRequest,
@@ -28,6 +33,11 @@ from app.workspace.manager import WorkspaceManager, split_command
 class LocalGitHub:
     def __init__(self, remote: Path) -> None:
         self.remote = remote
+        self.artifact_zip = make_zip_bytes({"junit.xml": "<testsuite tests='1'/>\n", "nested/log.txt": "ok\n"})
+        self.artifact_digest: str | None = artifact_digest(self.artifact_zip)
+        self.artifact_size_in_bytes: int | None = None
+        self.artifact_updated_at = "2026-05-30T00:01:00Z"
+        self.downloaded_artifacts: list[int] = []
 
     def git_remote_url(self, owner: str, repo: str) -> str:
         return str(self.remote)
@@ -37,6 +47,56 @@ class LocalGitHub:
 
     async def get_repository(self, owner: str, repo: str) -> dict:
         return {"default_branch": "main"}
+
+    async def get_workflow_run(self, owner: str, repo: str, run_id: int) -> dict:
+        return {
+            "id": run_id,
+            "run_attempt": 1,
+            "workflow_id": 123,
+            "name": "CI",
+            "event": "pull_request",
+            "head_branch": "gpt/task",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "status": "completed",
+            "conclusion": "failure",
+            "html_url": "https://github.test/run/77",
+            "created_at": "2026-05-30T00:00:00Z",
+            "updated_at": "2026-05-30T00:01:00Z",
+        }
+
+    async def list_artifacts_for_run(self, owner: str, repo: str, run_id: int, *, per_page: int = 100, page: int | None = None) -> dict:
+        return {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "id": 55,
+                    "name": "reports",
+                    "size_in_bytes": self.artifact_size_in_bytes if self.artifact_size_in_bytes is not None else len(self.artifact_zip),
+                    "archive_download_url": "https://github.test/artifacts/55/zip",
+                    "digest": self.artifact_digest,
+                    "expired": False,
+                    "created_at": "2026-05-30T00:00:00Z",
+                    "expires_at": "2026-06-30T00:00:00Z",
+                    "updated_at": self.artifact_updated_at,
+                }
+            ],
+        }
+
+    async def download_artifact(self, owner: str, repo: str, artifact_id: int) -> bytes:
+        self.downloaded_artifacts.append(artifact_id)
+        return self.artifact_zip
+
+
+def make_zip_bytes(files: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def artifact_digest(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -93,6 +153,146 @@ def make_service(
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts")))
+    github = service.github  # type: ignore[attr-defined]
+
+    first = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
+        )
+    )
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+
+    assert first.downloaded is True
+    assert first.skipped is False
+    assert first.target_dir == ".gpt-artifacts/runs/77"
+    assert first.manifest_path == ".gpt-artifacts/runs/77/manifest.json"
+    assert first.gitignore_updated is True
+    assert first.artifacts[0].destination_dir == ".gpt-artifacts/runs/77/55-reports"
+    assert (repo_dir / first.artifacts[0].destination_dir / "junit.xml").read_text(encoding="utf-8").startswith("<testsuite")
+    assert json.loads((repo_dir / first.manifest_path).read_text(encoding="utf-8"))["remote_fingerprint"] == first.remote_fingerprint
+    assert ".gpt-artifacts/" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
+    assert ".gpt-artifacts" not in git("status", "--porcelain=v1", "--untracked-files=all", cwd=repo_dir)
+    assert github.downloaded_artifacts == [55]
+
+    github.artifact_size_in_bytes = len(github.artifact_zip) + 123
+    github.artifact_updated_at = "2026-05-30T00:02:00Z"
+
+    second = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
+        )
+    )
+
+    assert second.downloaded is False
+    assert second.skipped is True
+    assert github.downloaded_artifacts == [55]
+
+
+def test_sync_run_artifacts_to_workspace_replaces_target_when_digest_changes(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_replace")))
+    github = service.github  # type: ignore[attr-defined]
+
+    first = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
+        )
+    )
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    assert (repo_dir / first.artifacts[0].destination_dir / "junit.xml").exists()
+
+    github.artifact_zip = make_zip_bytes({"new-report.txt": "new\n"})
+    github.artifact_digest = artifact_digest(github.artifact_zip)
+    second = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
+        )
+    )
+
+    assert second.downloaded is True
+    assert second.skipped is False
+    assert github.downloaded_artifacts == [55, 55]
+    assert not (repo_dir / first.artifacts[0].destination_dir / "junit.xml").exists()
+    assert (repo_dir / second.artifacts[0].destination_dir / "new-report.txt").read_text(encoding="utf-8") == "new\n"
+
+
+def test_sync_run_artifacts_to_workspace_requires_artifact_digest(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, _ = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_no_digest")))
+    service.github.artifact_digest = None  # type: ignore[attr-defined]
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.sync_run_artifacts_to_workspace(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                SyncRunArtifactsToWorkspaceRequest(run_id=77),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
+    assert "missing digest" in exc.value.message
+
+
+def test_sync_run_artifacts_to_workspace_rejects_unsupported_digest_format(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, _ = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_bad_digest")))
+    service.github.artifact_digest = "sha256:not-hex"  # type: ignore[attr-defined]
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.sync_run_artifacts_to_workspace(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                SyncRunArtifactsToWorkspaceRequest(run_id=77),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
+    assert "Unsupported artifact digest format" in exc.value.message
+
+
+def test_sync_run_artifacts_to_workspace_rejects_digest_mismatch(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, _ = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_digest_mismatch")))
+    service.github.artifact_digest = artifact_digest(b"different archive bytes")  # type: ignore[attr-defined]
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.sync_run_artifacts_to_workspace(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                SyncRunArtifactsToWorkspaceRequest(run_id=77),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
+    assert "does not match GitHub digest" in exc.value.message
 
 
 def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):

@@ -18,7 +18,6 @@ from app.models.ci import (
     GetRunLogRequest,
     ListArtifactsRequest,
     ListCachesRequest,
-    ReadArtifactTextRequest,
     RerunWorkflowJobRequest,
     RerunWorkflowRunRequest,
 )
@@ -138,6 +137,7 @@ class CIGitHubStub:
                     "name": "reports",
                     "size_in_bytes": 123,
                     "archive_download_url": "https://github.test/artifacts/55/zip",
+                    "digest": "sha256:reports",
                     "expired": False,
                     "created_at": "2026-05-30T00:00:00Z",
                     "expires_at": "2026-06-30T00:00:00Z",
@@ -201,7 +201,6 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     rerun = asyncio.run(service.rerun_workflow_run("acme", "demo", RerunWorkflowRunRequest(run_id=77, enable_debug_logging=True)))
     job = asyncio.run(service.rerun_workflow_job("acme", "demo", RerunWorkflowJobRequest(job_id=10)))
     artifacts = asyncio.run(service.list_artifacts("acme", "demo", ListArtifactsRequest(run_id=77)))
-    artifact_text = asyncio.run(service.read_artifact_text("acme", "demo", ReadArtifactTextRequest(artifact_id=55)))
     caches = asyncio.run(service.list_caches("acme", "demo", ListCachesRequest(key="ce-lib-")))
     dry_run = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101, dry_run=True)))
     delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False)))
@@ -213,8 +212,7 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     assert rerun.accepted is True and github.rerun_runs == [(77, True)]
     assert job.accepted is True and github.rerun_jobs == [(10, False)]
     assert artifacts.artifacts[0].name == "reports"
-    assert artifact_text.entries[0].name == "junit.xml"
-    assert "testsuite" in artifact_text.entries[0].content
+    assert artifacts.artifacts[0].digest == "sha256:reports"
     assert caches.caches[0].key == "ce-lib-windows-x64"
     assert dry_run.deleted is False and dry_run.matched_count == 1
     assert delete.deleted is True and github.deleted_caches == [101]

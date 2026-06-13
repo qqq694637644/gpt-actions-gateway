@@ -45,7 +45,7 @@ class GitHubClient:
 
     async def git_auth_config(self) -> list[str]:
         credentials = await self._auth.get_git_credentials(self._client)
-        basic_token = base64.b64encode(f"{credentials.username}:{credentials.password}".encode("utf-8")).decode("ascii")
+        basic_token = base64.b64encode(f"{credentials.username}:{credentials.password}".encode()).decode("ascii")
         return [
             "-c",
             f"http.extraHeader=Authorization: Basic {basic_token}",
@@ -251,8 +251,11 @@ class GitHubClient:
     async def download_run_logs(self, owner: str, repo: str, run_id: int) -> bytes:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs", follow_redirects=True, raw_bytes=True)
 
-    async def list_artifacts_for_run(self, owner: str, repo: str, run_id: int, *, per_page: int = 100) -> dict[str, Any]:
-        return await self._request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts", params={"per_page": per_page})
+    async def list_artifacts_for_run(self, owner: str, repo: str, run_id: int, *, per_page: int = 100, page: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"per_page": per_page}
+        if page is not None:
+            params["page"] = page
+        return await self._request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts", params=params)
 
     async def download_artifact(self, owner: str, repo: str, artifact_id: int) -> bytes:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip", follow_redirects=True, raw_bytes=True)

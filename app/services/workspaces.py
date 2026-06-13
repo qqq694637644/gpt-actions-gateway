@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+import io
+import json
+import re
+import shutil
+import zipfile
 from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
+from app.models.ci import SyncedRunArtifact, SyncRunArtifactsToWorkspaceRequest, SyncRunArtifactsToWorkspaceResponse
 from app.models.workspaces import (
     PrepareWorkspaceFromMirrorRequest,
     PrepareWorkspaceMirrorRequest,
@@ -28,7 +38,7 @@ from app.models.workspaces import (
     WorkspaceWriteFileResponse,
 )
 from app.policy.rules import Policy
-from app.storage.audit import AuditStore
+from app.storage.audit import AuditStore, canonical_hash
 from app.workspace.exec import PwshExecutor
 from app.workspace.manager import WorkspaceManager, command_hash
 from app.workspace.text_ops import (
@@ -42,6 +52,11 @@ from app.workspace.text_ops import (
     snapshot_files,
     validate_write_target,
 )
+
+_ARTIFACTS_ROOT = ".gpt-artifacts"
+_ARTIFACTS_GITIGNORE_ENTRY = ".gpt-artifacts/"
+_ARTIFACT_PAGE_SIZE = 100
+_SAFE_ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class WorkspaceService:
@@ -441,6 +456,130 @@ class WorkspaceService:
         )
         return WorkspaceResetResponse(workspace_id=workspace_id, branch=request.branch, head_sha=head_sha, dirty=bool(changed), removed_untracked_files=removed)
 
+    async def sync_run_artifacts_to_workspace(
+        self,
+        owner: str,
+        repo: str,
+        workspace_id: str,
+        request: SyncRunArtifactsToWorkspaceRequest,
+    ) -> SyncRunArtifactsToWorkspaceResponse:
+        meta = self._assert_workspace(owner, repo, workspace_id)
+        raw_run = await self.github.get_workflow_run(owner, repo, request.run_id)
+        if raw_run.get("status") != "completed":
+            raise ApiError(
+                ErrorCode.CI_LOG_NOT_READY,
+                "Workflow run has not completed; artifacts may still be changing.",
+                status_code=409,
+                details={"run_id": request.run_id, "status": raw_run.get("status"), "conclusion": raw_run.get("conclusion")},
+            )
+
+        raw_artifacts, total_count = await self._list_all_run_artifacts(owner, repo, request.run_id)
+        remote_artifacts = _artifact_manifest_records(raw_artifacts)
+        remote_fingerprint = canonical_hash({"run_id": request.run_id, "artifacts": _artifact_fingerprint_inputs(remote_artifacts)})
+
+        repo_dir = self.manager.repo_dir(workspace_id)
+        target_dir = repo_dir / _ARTIFACTS_ROOT / "runs" / str(request.run_id)
+        manifest_path = target_dir / "manifest.json"
+        target_dir_rel = _relative_repo_path(repo_dir, target_dir)
+        manifest_path_rel = _relative_repo_path(repo_dir, manifest_path)
+        gitignore_path_rel = ".gitignore"
+
+        with self.manager.lock(workspace_id):
+            gitignore_updated = _ensure_gpt_artifacts_gitignore(repo_dir)
+            existing_manifest = _read_artifact_manifest(manifest_path)
+            skipped = _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
+            if skipped:
+                artifacts = [SyncedRunArtifact(**item) for item in existing_manifest.get("artifacts", [])]
+            else:
+                _remove_existing_artifact_target(target_dir)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                artifacts = []
+                for item in remote_artifacts:
+                    artifact_id = int(item["artifact_id"])
+                    name = str(item["name"])
+                    destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
+                    archive_data = await self.github.download_artifact(owner, repo, artifact_id)
+                    _verify_artifact_digest(archive_data, str(item["digest"]))
+                    file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
+                    artifacts.append(
+                        SyncedRunArtifact(
+                            artifact_id=artifact_id,
+                            name=name,
+                            digest=str(item["digest"]),
+                            destination_dir=_relative_repo_path(repo_dir, destination),
+                            file_count=file_count,
+                            bytes_written=bytes_written,
+                        )
+                    )
+                _write_artifact_manifest(
+                    manifest_path,
+                    {
+                        "run_id": request.run_id,
+                        "run_attempt": raw_run.get("run_attempt"),
+                        "workflow_name": raw_run.get("name"),
+                        "head_branch": raw_run.get("head_branch"),
+                        "head_sha": raw_run.get("head_sha"),
+                        "status": raw_run.get("status"),
+                        "conclusion": raw_run.get("conclusion"),
+                        "run_url": raw_run.get("html_url"),
+                        "remote_fingerprint": remote_fingerprint,
+                        "remote_artifacts": remote_artifacts,
+                        "artifacts": [item.model_dump() for item in artifacts],
+                        "synced_at": _utc_now_iso(),
+                    },
+                )
+            changed, _, _ = await self.manager.changed_files(repo_dir)
+            diff_stat = await self.manager.diff_stat(repo_dir)
+
+        response = SyncRunArtifactsToWorkspaceResponse(
+            workspace_id=workspace_id,
+            run_id=request.run_id,
+            run_attempt=raw_run.get("run_attempt"),
+            target_dir=target_dir_rel,
+            manifest_path=manifest_path_rel,
+            remote_fingerprint=remote_fingerprint,
+            downloaded=not skipped,
+            skipped=skipped,
+            gitignore_path=gitignore_path_rel,
+            gitignore_updated=gitignore_updated,
+            artifacts=artifacts,
+            total_count=total_count,
+            changed_files=changed,
+            diff_stat=diff_stat,
+        )
+        self._audit(
+            operation_id="syncRunArtifactsToWorkspace",
+            owner=owner,
+            repo=repo,
+            workspace_id=workspace_id,
+            branch=meta.branch,
+            head_sha_before=meta.head_sha,
+            changed_files=[item.model_dump() for item in changed],
+            metadata={
+                "run_id": request.run_id,
+                "remote_fingerprint": remote_fingerprint,
+                "downloaded": response.downloaded,
+                "skipped": response.skipped,
+                "artifact_count": len(artifacts),
+            },
+        )
+        return response
+
+    async def _list_all_run_artifacts(self, owner: str, repo: str, run_id: int) -> tuple[list[dict[str, Any]], int]:
+        artifacts: list[dict[str, Any]] = []
+        total_count = 0
+        page = 1
+        while True:
+            payload = await self.github.list_artifacts_for_run(owner, repo, run_id, per_page=_ARTIFACT_PAGE_SIZE, page=page)
+            if page == 1:
+                total_count = int(payload.get("total_count") or 0)
+            page_items = payload.get("artifacts", [])
+            artifacts.extend(page_items)
+            if not page_items or len(artifacts) >= total_count or len(page_items) < _ARTIFACT_PAGE_SIZE:
+                break
+            page += 1
+        return artifacts, total_count or len(artifacts)
+
     def _assert_workspace(self, owner: str, repo: str, workspace_id: str):
         self.policy.assert_repo_allowed(owner, repo)
         meta = self.manager.get_meta(workspace_id)
@@ -493,3 +632,192 @@ class WorkspaceService:
             "workspace_duration_ms": result.workspace_duration_ms,
             "total_duration_ms": result.total_duration_ms,
         }
+
+
+def _artifact_manifest_records(raw_artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    missing_digest: list[dict[str, Any]] = []
+    for raw in raw_artifacts:
+        artifact_id = raw.get("id")
+        digest = raw.get("digest")
+        name = str(raw.get("name") or "")
+        if artifact_id is None:
+            raise ApiError(ErrorCode.GITHUB_ERROR, "GitHub artifact payload is missing id.", status_code=502, details={"artifact": raw})
+        if not isinstance(digest, str) or not digest.strip():
+            missing_digest.append({"artifact_id": artifact_id, "name": name})
+            continue
+        artifacts.append(
+            {
+                "artifact_id": int(artifact_id),
+                "name": name,
+                "digest": digest.strip(),
+                "size_in_bytes": raw.get("size_in_bytes"),
+                "created_at": raw.get("created_at"),
+                "expires_at": raw.get("expires_at"),
+                "updated_at": raw.get("updated_at"),
+            }
+        )
+    if missing_digest:
+        raise ApiError(
+            ErrorCode.GITHUB_ERROR,
+            "GitHub artifact payload is missing digest; refusing to sync without digest.",
+            status_code=502,
+            details={"missing_artifacts": missing_digest},
+        )
+    return sorted(artifacts, key=lambda item: item["artifact_id"])
+
+
+def _artifact_fingerprint_inputs(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "artifact_id": item["artifact_id"],
+            "name": item["name"],
+            "digest": item["digest"],
+        }
+        for item in artifacts
+    ]
+
+
+def _ensure_gpt_artifacts_gitignore(repo_dir: Path) -> bool:
+    gitignore = repo_dir / ".gitignore"
+    if gitignore.exists() and not gitignore.is_file():
+        raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Repository .gitignore exists but is not a file.", status_code=409)
+    text = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
+    if _gitignore_has_gpt_artifacts_entry(text):
+        return False
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += _ARTIFACTS_GITIGNORE_ENTRY + "\n"
+    gitignore.write_text(text, encoding="utf-8")
+    return True
+
+
+def _gitignore_has_gpt_artifacts_entry(text: str) -> bool:
+    accepted = {
+        ".gpt-artifacts",
+        ".gpt-artifacts/",
+        ".gpt-artifacts/**",
+        "/.gpt-artifacts",
+        "/.gpt-artifacts/",
+        "/.gpt-artifacts/**",
+    }
+    for line in text.splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if not entry or entry.startswith("!"):
+            continue
+        if entry in accepted:
+            return True
+    return False
+
+
+def _read_artifact_manifest(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Artifact manifest path exists but is not a file.", status_code=409)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Artifact manifest is not valid JSON.", status_code=409) from exc
+    if not isinstance(data, dict):
+        raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Artifact manifest JSON must be an object.", status_code=409)
+    return data
+
+
+def _manifest_is_current(repo_dir: Path, manifest: dict[str, Any] | None, remote_fingerprint: str) -> bool:
+    if not manifest or manifest.get("remote_fingerprint") != remote_fingerprint:
+        return False
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        return False
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("destination_dir"), str):
+            return False
+        if not (repo_dir / artifact["destination_dir"]).exists():
+            return False
+    return True
+
+
+def _write_artifact_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _remove_existing_artifact_target(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+
+
+def _extract_artifact_archive(data: bytes, destination: Path) -> tuple[int, int]:
+    file_count = 0
+    bytes_written = 0
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                member_path = _safe_zip_member_path(info.filename)
+                target = destination.joinpath(*member_path.parts)
+                _assert_inside_directory(destination, target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                file_count += 1
+                bytes_written += info.file_size
+    except zipfile.BadZipFile as exc:
+        raise ApiError(ErrorCode.CI_LOG_NOT_READY, "Artifact archive is not a valid zip file.", status_code=502) from exc
+    return file_count, bytes_written
+
+
+def _verify_artifact_digest(data: bytes, digest: str) -> None:
+    algorithm, separator, expected = digest.strip().partition(":")
+    if separator != ":" or algorithm.lower() != "sha256" or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+        raise ApiError(
+            ErrorCode.GITHUB_ERROR,
+            "Unsupported artifact digest format; expected sha256:<64 hex>.",
+            status_code=502,
+            details={"digest": digest},
+        )
+    actual = hashlib.sha256(data).hexdigest()
+    if actual.lower() != expected.lower():
+        raise ApiError(
+            ErrorCode.GITHUB_ERROR,
+            "Downloaded artifact digest does not match GitHub digest.",
+            status_code=502,
+            details={"expected_digest": digest, "actual_digest": f"sha256:{actual}"},
+        )
+
+
+def _safe_zip_member_path(filename: str) -> PurePosixPath:
+    raw = filename.replace("\\", "/").strip()
+    member_path = PurePosixPath(raw)
+    if not raw or member_path.is_absolute() or any(part in {"", ".", ".."} or ":" in part for part in member_path.parts):
+        raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Artifact archive contains an unsafe path.", status_code=403, details={"path": filename})
+    return member_path
+
+
+def _assert_inside_directory(root: Path, candidate: Path) -> None:
+    root_resolved = root.resolve(strict=False)
+    candidate_resolved = candidate.resolve(strict=False)
+    try:
+        candidate_resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Artifact archive path escapes its destination directory.", status_code=403) from exc
+
+
+def _relative_repo_path(repo_dir: Path, path: Path) -> str:
+    return path.relative_to(repo_dir).as_posix()
+
+
+def _safe_artifact_name(name: str) -> str:
+    safe = _SAFE_ARTIFACT_NAME_RE.sub("-", name.strip()).strip(".-_")
+    return (safe or "artifact")[:80]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")

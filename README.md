@@ -49,7 +49,7 @@ GPT can inspect and edit code by running controlled PowerShell inside a prepared
 - `getJobLog`
 - `getRunLog`
 - `listArtifacts`
-- `readArtifactText`
+- `syncRunArtifactsToWorkspace`
 - `listCaches`
 - `deleteCache`
 
@@ -239,7 +239,7 @@ curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/status/query" \
   -d '{"pr_number": 10}'
 ```
 
-When CI fails, call `queryFailedCiLog`, then drill into job logs, run logs, or text artifacts. Use `workspaceExecPwsh` again to fix code in the same workspace and publish the next commit through `workspaceCommitAndPush`.
+When CI fails, call `queryFailedCiLog`, then drill into job logs, run logs, or sync run artifacts into `.gpt-artifacts/` with `syncRunArtifactsToWorkspace`. Use `workspaceExecPwsh` again to inspect the downloaded files, fix code in the same workspace, and publish the next commit through `workspaceCommitAndPush`.
 
 To trigger a `workflow_dispatch` workflow without creating an empty commit, call `dispatchWorkflow` and then query by the returned `query_hint`:
 
