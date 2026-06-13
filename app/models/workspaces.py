@@ -75,8 +75,6 @@ class WorkspaceExecPwshResponse(GatewayBaseModel):
     stderr: str
     truncated: bool
     duration_ms: int
-    changed_files: list[ChangedFile]
-    diff_stat: str
 
 
 class WorkspaceStatusRequest(GatewayBaseModel):

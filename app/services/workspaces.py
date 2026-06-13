@@ -150,8 +150,6 @@ class WorkspaceService:
                 and self.manager.should_use_python_venv(meta.branch, source_pr_number=meta.source_pr_number),
                 python_venv_dir=self.settings.workspace_python_venv_dir,
             )
-            changed, _, _ = await self.manager.changed_files(repo_dir)
-            diff_stat = await self.manager.diff_stat(repo_dir)
         self._audit(
             operation_id="workspaceExecPwsh",
             owner=owner,
@@ -159,7 +157,7 @@ class WorkspaceService:
             workspace_id=workspace_id,
             branch=meta.branch,
             head_sha_before=meta.head_sha,
-            changed_files=[item.model_dump() for item in changed],
+            changed_files=[],
             command_hash=command_hash(request.script),
             exit_code=result.exit_code,
             duration_ms=result.duration_ms,
@@ -170,8 +168,6 @@ class WorkspaceService:
             stderr=result.stderr,
             truncated=result.truncated,
             duration_ms=result.duration_ms,
-            changed_files=changed,
-            diff_stat=diff_stat,
         )
 
     async def status(self, owner: str, repo: str, workspace_id: str, request: WorkspaceStatusRequest) -> WorkspaceStatusResponse:
