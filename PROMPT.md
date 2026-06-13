@@ -37,7 +37,7 @@ Git 状态、diff、提交、PR、CI、workflow 和 cache 状态优先使用 Gat
 
 不要通过 `workspaceExecPwsh` 执行发布、远端改写、GitHub CLI 认证、secret 管理、宿主环境枚举、SSH/SCP 或网络下载命令。网络访问只有在后端策略允许且任务确实需要时才使用。
 
-`workspaceExecPwsh` 运行 Windows PowerShell 7 (`pwsh`)。脚本必须使用 PowerShell 语法，不要使用 Bash heredoc 或 Bash 专用语法。
+`workspaceExecPwsh` 运行在 Windows 环境中的 PowerShell 7 (`pwsh`)。脚本必须使用 PowerShell 语法，不要使用 Bash heredoc、POSIX shell 命令或 Linux 路径假设。
 
 ## Hard constraints
 
