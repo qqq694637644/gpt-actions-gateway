@@ -187,8 +187,8 @@ def test_ci_run_jobs_job_and_logs() -> None:
 
     assert run.run.run_id == 77
     assert jobs.jobs[0].name == "build"
-    assert "FAILED test_example.py" in job_log.log
-    assert run_log.entries[0].name == "job1/1_build.txt"
+    assert "FAILED test_example.py" in job_log.log_excerpt
+    assert run_log.files[0].name == "job1/1_build.txt"
 
 
 def test_ci_dispatch_rerun_artifacts_and_caches() -> None:

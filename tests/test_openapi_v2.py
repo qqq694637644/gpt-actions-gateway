@@ -75,3 +75,15 @@ def test_workspace_responses_exclude_implicit_state_fields():
     assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run", "syncRunArtifactsToWorkspace")
     assert "diff_stat" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run", "syncRunArtifactsToWorkspace")
     assert "commit_url" not in _schema_properties(schema, "/repos/{owner}/{repo}/branches/create-work-branch", "createWorkBranch")
+
+
+def test_ci_responses_exclude_duplicate_log_aliases():
+    schema = app.openapi()
+
+    assert "workflow_run" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/runs/get", "getCiRun")
+    assert "log" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/jobs/log", "getJobLog")
+    assert "entries" not in _schema_properties(schema, "/repos/{owner}/{repo}/ci/runs/log", "getRunLog")
+
+    run_log_file = schema["components"]["schemas"]["RunLogFile"]["properties"]
+    assert "log" not in run_log_file
+    assert "log_excerpt" in run_log_file

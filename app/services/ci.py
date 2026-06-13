@@ -118,7 +118,7 @@ class CIService:
             jobs_payload = await self.github.list_jobs_for_run(owner, repo, request.run_id, run_attempt=raw_run.get("run_attempt"))
             jobs = [self._job_from_github(job) for job in jobs_payload.get("jobs", [])]
         run = self._run_from_github(raw_run, jobs=jobs)
-        return GetCiRunResponse(workflow_run=run, run=run)
+        return GetCiRunResponse(run=run)
 
     async def get_ci_jobs(self, owner: str, repo: str, request: GetCiJobsRequest) -> GetCiJobsResponse:
         self.policy.assert_repo_allowed(owner, repo)
@@ -294,7 +294,7 @@ class CIService:
             raw_log = _extract_step_log(raw_log, request.step_name)
         max_lines = min(request.max_lines or self.settings.max_log_lines, self.settings.max_log_lines)
         excerpt, last_lines, total_lines, truncated = _trim_log(raw_log, max_lines=max_lines, max_bytes=self.settings.max_log_bytes)
-        return JobLogResponse(job_id=request.job_id, step_name=request.step_name, log_excerpt=excerpt, log=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=truncated)
+        return JobLogResponse(job_id=request.job_id, step_name=request.step_name, log_excerpt=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=truncated)
 
     async def get_run_log(self, owner: str, repo: str, request: GetRunLogRequest) -> RunLogResponse:
         self.policy.assert_repo_allowed(owner, repo)
@@ -317,10 +317,10 @@ class CIService:
                         continue
                     text = raw.decode("utf-8", errors="replace")
                     excerpt, last_lines, total_lines, file_truncated = _trim_log(text, max_lines=max_lines, max_bytes=self.settings.max_log_bytes)
-                    files.append(RunLogFile(path=info.filename, name=info.filename, log_excerpt=excerpt, log=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=file_truncated))
+                    files.append(RunLogFile(path=info.filename, name=info.filename, log_excerpt=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=file_truncated))
         except zipfile.BadZipFile as exc:
             raise ApiError(ErrorCode.CI_LOG_NOT_READY, "Workflow run log archive is not a valid zip file.", status_code=502) from exc
-        return RunLogResponse(run_id=request.run_id, files=files, entries=files, truncated=truncated)
+        return RunLogResponse(run_id=request.run_id, files=files, truncated=truncated)
 
     async def list_artifacts(self, owner: str, repo: str, request: ListArtifactsRequest) -> ListArtifactsResponse:
         self.policy.assert_repo_allowed(owner, repo)

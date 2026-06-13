@@ -73,7 +73,6 @@ class GetCiRunRequest(GatewayBaseModel):
 
 
 class GetCiRunResponse(GatewayBaseModel):
-    workflow_run: CIRun
     run: CIRun
 
 
@@ -218,7 +217,6 @@ class JobLogResponse(GatewayBaseModel):
     job_id: int
     step_name: str | None = None
     log_excerpt: str
-    log: str
     last_lines: str
     total_lines: int
     truncated: bool = False
@@ -235,7 +233,6 @@ class RunLogFile(GatewayBaseModel):
     path: str
     name: str
     log_excerpt: str
-    log: str
     last_lines: str
     total_lines: int
     truncated: bool = False
@@ -244,7 +241,6 @@ class RunLogFile(GatewayBaseModel):
 class RunLogResponse(GatewayBaseModel):
     run_id: int
     files: list[RunLogFile]
-    entries: list[RunLogFile]
     truncated: bool = False
 
 
