@@ -83,7 +83,6 @@ class WorkspaceService:
             workspace_id=result.meta.workspace_id,
             branch=result.meta.branch,
             head_sha_after=result.meta.head_sha,
-            changed_files=[item.model_dump() for item in result.changed_files],
             metadata=self._prepare_metadata(result),
         )
         return self._response_from_prepare_result(owner, repo, result)
@@ -156,7 +155,6 @@ class WorkspaceService:
         with self.manager.lock(workspace_id):
             diff_text, truncated = await self.manager.diff_text(repo_dir, paths=request.paths, stat_only=request.stat_only, max_bytes=max_bytes)
             diff_stat = diff_text if request.stat_only else await self.manager.diff_stat(repo_dir)
-            changed, _, _ = await self.manager.changed_files(repo_dir)
         self._audit(
             operation_id="workspaceDiff",
             owner=owner,
@@ -164,9 +162,8 @@ class WorkspaceService:
             workspace_id=workspace_id,
             branch=meta.branch,
             head_sha_before=meta.head_sha,
-            changed_files=[item.model_dump() for item in changed],
         )
-        return WorkspaceDiffResponse(workspace_id=workspace_id, diff=diff_text, diff_stat=diff_stat, changed_files=changed, truncated=truncated)
+        return WorkspaceDiffResponse(workspace_id=workspace_id, diff=diff_text, diff_stat=diff_stat, truncated=truncated)
 
     async def apply_patch(self, owner: str, repo: str, workspace_id: str, request: WorkspaceApplyPatchRequest) -> WorkspaceApplyPatchResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)
@@ -192,7 +189,6 @@ class WorkspaceService:
                     dry_run=request.dry_run,
                     changed_files=changed,
                     diff_stat=diff_stat,
-                    truncated=False,
                 )
                 should_restore = request.dry_run
             except Exception:
@@ -396,7 +392,6 @@ class WorkspaceService:
         with self.manager.lock(workspace_id):
             removed = await self.manager.reset_to_remote(repo_dir, request.branch, clean_untracked=request.clean_untracked)
             head_sha = await self.manager.head_sha(repo_dir)
-            changed, _, _ = await self.manager.changed_files(repo_dir)
         self._audit(
             operation_id="workspaceReset",
             owner=owner,
@@ -404,9 +399,8 @@ class WorkspaceService:
             workspace_id=workspace_id,
             branch=request.branch,
             head_sha_after=head_sha,
-            changed_files=[],
         )
-        return WorkspaceResetResponse(workspace_id=workspace_id, branch=request.branch, head_sha=head_sha, dirty=bool(changed), removed_untracked_files=removed)
+        return WorkspaceResetResponse(workspace_id=workspace_id, branch=request.branch, head_sha=head_sha, removed_untracked_files=removed)
 
     async def sync_run_artifacts_to_workspace(
         self,
@@ -480,9 +474,6 @@ class WorkspaceService:
                         "synced_at": _utc_now_iso(),
                     },
                 )
-            changed, _, _ = await self.manager.changed_files(repo_dir)
-            diff_stat = await self.manager.diff_stat(repo_dir)
-
         response = SyncRunArtifactsToWorkspaceResponse(
             workspace_id=workspace_id,
             run_id=request.run_id,
@@ -496,8 +487,6 @@ class WorkspaceService:
             gitignore_updated=gitignore_updated,
             artifacts=artifacts,
             total_count=total_count,
-            changed_files=changed,
-            diff_stat=diff_stat,
         )
         self._audit(
             operation_id="syncRunArtifactsToWorkspace",
@@ -506,7 +495,6 @@ class WorkspaceService:
             workspace_id=workspace_id,
             branch=meta.branch,
             head_sha_before=meta.head_sha,
-            changed_files=[item.model_dump() for item in changed],
             metadata={
                 "run_id": request.run_id,
                 "remote_fingerprint": remote_fingerprint,
@@ -566,8 +554,6 @@ class WorkspaceService:
             source_pr_number=result.meta.source_pr_number,
             head_sha=result.meta.head_sha,
             default_branch=result.meta.default_branch,
-            dirty=result.dirty,
-            changed_files=result.changed_files,
             created=result.created,
             refreshed=result.refreshed,
             diagnostics=self._diagnostics_model(result),
@@ -578,7 +564,6 @@ class WorkspaceService:
         return {
             "created": result.created,
             "refreshed": result.refreshed,
-            "dirty": result.dirty,
             "mirror": asdict(result.mirror),
             "workspace_stage": result.workspace_stage,
             "workspace_duration_ms": result.workspace_duration_ms,

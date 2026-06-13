@@ -56,3 +56,22 @@ def test_workspace_exec_pwsh_response_excludes_workspace_change_summary():
     assert set(properties) == {"exit_code", "stdout", "stderr", "truncated", "duration_ms"}
     assert "changed_files" not in properties
     assert "diff_stat" not in properties
+
+
+def _schema_properties(schema: dict, path: str, operation: str) -> set[str]:
+    response_schema = schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+    schema_name = response_schema["$ref"].rsplit("/", 1)[-1]
+    return set(schema["components"]["schemas"][schema_name]["properties"])
+
+
+def test_workspace_responses_exclude_implicit_state_fields():
+    schema = app.openapi()
+
+    assert "dirty" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/prepare", "prepareWorkspace")
+    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/prepare", "prepareWorkspace")
+    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/diff", "workspaceDiff")
+    assert "dirty" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/reset", "workspaceReset")
+    assert "truncated" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/apply-patch", "workspaceApplyPatch")
+    assert "changed_files" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run", "syncRunArtifactsToWorkspace")
+    assert "diff_stat" not in _schema_properties(schema, "/repos/{owner}/{repo}/workspaces/{workspace_id}/artifacts/sync-run", "syncRunArtifactsToWorkspace")
+    assert "commit_url" not in _schema_properties(schema, "/repos/{owner}/{repo}/branches/create-work-branch", "createWorkBranch")

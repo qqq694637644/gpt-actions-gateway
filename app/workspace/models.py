@@ -7,8 +7,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.common import ChangedFile
-
 
 class WorkspaceMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -65,8 +63,6 @@ class WorkspacePrepareStats:
     meta: WorkspaceMeta
     created: bool
     refreshed: bool
-    changed_files: list[ChangedFile]
-    dirty: bool
     mirror: MirrorPrepareStats
     workspace_stage: str
     workspace_duration_ms: int

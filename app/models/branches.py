@@ -27,4 +27,3 @@ class CreateWorkBranchResponse(GatewayBaseModel):
     created: bool
     continued: bool = False
     already_exists: bool = False
-    commit_url: str | None = None

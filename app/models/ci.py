@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from app.models.common import ChangedFile, GatewayBaseModel, IdempotentRequest
+from app.models.common import GatewayBaseModel, IdempotentRequest
 
 
 class CIStep(GatewayBaseModel):
@@ -297,6 +297,4 @@ class SyncRunArtifactsToWorkspaceResponse(GatewayBaseModel):
     gitignore_updated: bool
     artifacts: list[SyncedRunArtifact]
     total_count: int
-    changed_files: list[ChangedFile] = Field(default_factory=list)
-    diff_stat: str = ""
     warning: str | None = None

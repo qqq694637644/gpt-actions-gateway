@@ -40,8 +40,6 @@ class PrepareWorkspaceResponse(GatewayBaseModel):
     source_pr_number: int | None = None
     head_sha: str
     default_branch: str
-    dirty: bool
-    changed_files: list[ChangedFile]
     created: bool
     refreshed: bool
     diagnostics: WorkspacePrepareDiagnostics
@@ -92,7 +90,6 @@ class WorkspaceDiffResponse(GatewayBaseModel):
     workspace_id: str
     diff: str
     diff_stat: str
-    changed_files: list[ChangedFile]
     truncated: bool
 
 
@@ -109,7 +106,6 @@ class WorkspaceApplyPatchResponse(GatewayBaseModel):
     dry_run: bool
     changed_files: list[ChangedFile]
     diff_stat: str
-    truncated: bool = False
 
 
 class WorkspaceWriteFileRequest(GatewayBaseModel):
@@ -164,5 +160,4 @@ class WorkspaceResetResponse(GatewayBaseModel):
     workspace_id: str
     branch: str
     head_sha: str
-    dirty: bool
     removed_untracked_files: list[str]

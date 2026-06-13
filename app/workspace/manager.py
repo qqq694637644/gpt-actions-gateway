@@ -188,13 +188,10 @@ class WorkspaceManager:
             meta.default_branch = default_branch
             meta.source_pr_number = source_pr_number
             save_meta(workspace_dir, meta)
-            changed, _, _ = await self.changed_files(repo_dir)
             diagnostics = WorkspacePrepareStats(
                 meta=meta,
                 created=created,
                 refreshed=refreshed,
-                changed_files=changed,
-                dirty=bool(changed),
                 mirror=mirror_stats,
                 workspace_stage=workspace_stage,
                 workspace_duration_ms=workspace_duration_ms,
