@@ -35,6 +35,8 @@
 
 Git 状态、diff、提交、PR、CI、workflow 和 cache 状态优先使用 Gateway 结构化工具，不要用 PowerShell 代替这些专用工具。
 
+Workspace 状态只通过 `workspaceStatus` 获取；不要假设 `prepareWorkspace`、`workspaceDiff`、`workspaceReset` 或 `syncRunArtifactsToWorkspace` 返回 `dirty` / `changed_files`。
+
 不要通过 `workspaceExecPwsh` 执行发布、远端改写、GitHub CLI 认证、secret 管理、宿主环境枚举、SSH/SCP 或网络下载命令。网络访问只有在后端策略允许且任务确实需要时才使用。
 
 `workspaceExecPwsh` 运行在 Windows 环境中的 PowerShell 7 (`pwsh`)。脚本必须使用 PowerShell 语法，不要使用 Bash heredoc、POSIX shell 命令或 Linux 路径假设。
@@ -52,6 +54,7 @@ Git 状态、diff、提交、PR、CI、workflow 和 cache 状态优先使用 Gat
 - 不提交依赖目录、生成目录、缓存目录、`.git` 内部文件、二进制文件或敏感文件。
 - 修改 workflow 文件前确认后端策略允许，并在 PR 中说明风险。
 - `deleteCache` 默认 dry run；实际删除前列出目标 cache 的 id/key/ref/size，并设置合理 `max_delete`。
+- `deleteCache(cache_id=...)` 不负责获取 cache metadata；dry run 只确认将按该 ID 操作。需要 key/ref/size 等信息时必须先调用 `listCaches`。
 - `dispatchWorkflow` 不返回 run_id；后续用返回的 `query_hint` 调 `queryCiStatus`。
 - 没有专用工具时，不要声称已经删除远端分支或执行其他未提供的 GitHub 维护操作。
 
@@ -78,6 +81,8 @@ Read-only investigation: `prepareWorkspace(base_ref=<ref>, workspace_id="ws_<tas
 New maintenance task: `createWorkBranch`，`prepareWorkspace(branch=<branch>)`，读取上下文，修改，验证，`workspaceDiff`，`workspaceCommitAndPush`，`createPullRequest`，最后 `queryCiStatus`。
 
 Continue an existing PR: `getPullRequest`，`prepareWorkspace(source_pr_number=<pr>)`，确认 workspace 状态，定位、修改、验证、diff，提交到 PR head branch，再查 CI。
+
+`queryCiStatus` 只用于查询 workflow run 级状态；不要从 `workflow_runs[].jobs` 判断 job 状态。需要 job 明细时显式调用 `getCiJobs`，需要日志时再调用 `queryFailedCiLog` / `getJobLog` / `getRunLog`。
 
 Fix failed CI: 先 `queryCiStatus` 和 `queryFailedCiLog`。需要完整日志或报告时，使用 `getJobLog`、`getRunLog`、`listArtifacts`、`syncRunArtifactsToWorkspace`。artifact 同步后用 `workspaceExecPwsh` 读取 `.gpt-artifacts/runs/<run_id>/`。然后修复、验证、diff、提交并重新查 CI。
 
