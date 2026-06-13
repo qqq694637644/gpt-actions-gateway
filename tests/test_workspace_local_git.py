@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -343,6 +344,26 @@ def test_workspace_prepare_prunes_expired_workspace_before_count_limit(tmp_path:
 
     assert prepared.workspace_id == "ws_new"
     assert not expired.exists()
+
+
+def test_workspace_prune_removes_readonly_git_objects(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    _, manager = make_service(tmp_path, remote, workspace_max_count=3, workspace_ttl_hours=48)
+    expired = manager.workspace_dir("ws_expired_readonly")
+    object_dir = expired / "repo" / ".git" / "objects" / "00"
+    object_dir.mkdir(parents=True)
+    readonly_object = object_dir / "abcdef"
+    readonly_object.write_text("git-object", encoding="utf-8")
+    readonly_object.chmod(stat.S_IREAD)
+    old = time.time() - 49 * 60 * 60
+    os.utime(expired, (old, old))
+
+    try:
+        assert manager.prune_expired_workspace_dirs() == 1
+        assert not expired.exists()
+    finally:
+        if readonly_object.exists():
+            readonly_object.chmod(stat.S_IREAD | stat.S_IWRITE)
 
 
 def test_workspace_prepare_keeps_fresh_and_locked_workspace_dirs(tmp_path: Path):
