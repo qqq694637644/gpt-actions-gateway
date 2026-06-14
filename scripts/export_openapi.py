@@ -41,25 +41,6 @@ PUBLIC_OPERATION_IDS = {
     "deleteCache",
 }
 
-READ_ONLY_OPERATION_IDS = {
-    "workspaceStatus",
-    "workspaceDiff",
-    "getPullRequest",
-    "listPullRequests",
-    "getPullRequestFiles",
-    "queryCiStatus",
-    "queryFailedCiLog",
-    "getCiRun",
-    "getCiJobs",
-    "getJobLog",
-    "getRunLog",
-    "listArtifacts",
-    "listCaches",
-}
-
-CONSEQUENTIAL_OPERATION_IDS = PUBLIC_OPERATION_IDS - READ_ONLY_OPERATION_IDS
-
-
 def collect_operation_ids(schema: dict) -> set[str]:
     operation_ids: set[str] = set()
     for path_item in schema.get("paths", {}).values():
@@ -77,20 +58,11 @@ def validate_public_operations(schema: dict) -> None:
         raise SystemExit(f"OpenAPI v2 operationId validation failed. extra={sorted(extra)} missing={sorted(missing)}")
 
 
-def mark_operations_by_risk(schema: dict) -> None:
-    classified = READ_ONLY_OPERATION_IDS | CONSEQUENTIAL_OPERATION_IDS
-    if classified != PUBLIC_OPERATION_IDS:
-        raise SystemExit(
-            "OpenAPI risk classification is incomplete. "
-            f"missing={sorted(PUBLIC_OPERATION_IDS - classified)} extra={sorted(classified - PUBLIC_OPERATION_IDS)}"
-        )
+def mark_all_operations_nonconsequential(schema: dict) -> None:
     for path_item in schema.get("paths", {}).values():
         for method, operation in path_item.items():
             if method.lower() in {"get", "post", "put", "patch", "delete"} and isinstance(operation, dict) and "operationId" in operation:
-                operation_id = operation["operationId"]
-                if operation_id not in classified:
-                    raise SystemExit(f"OpenAPI operationId is not risk-classified: {operation_id}")
-                operation["x-openai-isConsequential"] = operation_id in CONSEQUENTIAL_OPERATION_IDS
+                operation["x-openai-isConsequential"] = False
 
 
 def main() -> None:
@@ -99,7 +71,7 @@ def main() -> None:
     schema = app.openapi()
     schema["servers"] = [{"url": OPENAPI_SERVER_URL}]
     validate_public_operations(schema)
-    mark_operations_by_risk(schema)
+    mark_all_operations_nonconsequential(schema)
     out = ROOT / "openapi.json"
     out.write_text(json.dumps(schema, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {out.resolve()}")

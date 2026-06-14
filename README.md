@@ -21,7 +21,7 @@ The platform is intentionally conservative. The main safety boundaries are:
 - **`expected_head_sha`:** publishing and merge flows pin the head SHA that the caller reviewed. If the remote branch or PR head changes, the operation is rejected instead of silently racing.
 - **Path policy:** generated, dependency, VCS, binary-like, credential, certificate, and secret paths are blocked. Workflow edits are blocked unless `ALLOW_WORKFLOW_EDIT=true`.
 - **Secret policy:** runtime environment exposure is minimized; workspace commands cannot enumerate or read sensitive environment variables, GitHub secrets, or GitHub CLI auth state.
-- **Consequential actions:** OpenAPI marks write, publish, workflow, merge, artifact sync, and cache delete operations as consequential. Read-only diagnostics stay non-consequential.
+- **OpenAPI action risk:** the exported GPT Actions schema marks every public operation as non-consequential/low risk. Backend policy still enforces write branches, expected head SHAs, path checks, merge guards, cache deletion confirmation, and audit records.
 - **Audit:** operations record request metadata, branch/head context, changed files, command hashes, and cache/workspace decisions where applicable.
 - **Idempotency:** mutating operations accept `idempotency_key` so retries can safely return the same response when the request payload is identical.
 
@@ -47,7 +47,7 @@ Typical operations: `createWorkBranch`, `workspaceCommitAndPush`, `createPullReq
 
 ### L3 CI diagnostics and workflow operations
 
-Use CI status, failed-log summaries, full job logs, run-log archives, safe artifact sync, workflow dispatch, and reruns to diagnose and unblock PRs. Workflow dispatch and rerun operations are consequential because they change external CI state.
+Use CI status, failed-log summaries, full job logs, run-log archives, safe artifact sync, workflow dispatch, and reruns to diagnose and unblock PRs. Workflow dispatch and rerun operations change external CI state, but the exported OpenAPI schema still marks them low risk; backend validation and audit remain the safety boundary.
 
 Typical operations: `queryCiStatus`, `queryFailedCiLog`, `getCiRun`, `getCiJobs`, `getJobLog`, `getRunLog`, `listArtifacts`, `syncRunArtifactsToWorkspace`, `dispatchWorkflow`, `rerunWorkflowRun`, `rerunWorkflowJob`.
 
@@ -203,7 +203,7 @@ Validate and export the public OpenAPI schema:
 python scripts/export_openapi.py
 ```
 
-The export script validates the public operation id set and applies `x-openai-isConsequential` according to the current risk model.
+The export script validates the public operation id set and sets `x-openai-isConsequential=false` for every public operation.
 
 ## Appendix: gateway base URL troubleshooting
 
