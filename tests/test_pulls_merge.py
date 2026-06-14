@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
@@ -10,15 +11,26 @@ from app.models.pulls import MergePullRequestRequest
 from app.policy.rules import Policy
 from app.services.pulls import PullRequestService
 
+HEAD_SHA = "2222222222222222222222222222222222222222"
 
-def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True, base_ref: str = "main") -> dict:
+
+def pr_payload(
+    *,
+    merged: bool = False,
+    state: str = "open",
+    draft: bool = False,
+    mergeable: bool | None = True,
+    base_ref: str = "main",
+    head_ref: str = "gpt/fix-ci",
+    head_sha: str = HEAD_SHA,
+) -> dict:
     return {
         "number": 10,
         "html_url": "https://github.test/acme/demo/pull/10",
         "state": state,
         "title": "Fix CI",
         "body": "body",
-        "head": {"ref": "gpt/fix-ci", "sha": "2222222222222222222222222222222222222222"},
+        "head": {"ref": head_ref, "sha": head_sha},
         "base": {"ref": base_ref, "sha": "1111111111111111111111111111111111111111"},
         "draft": draft,
         "merged": merged,
@@ -29,8 +41,26 @@ def pr_payload(*, merged: bool = False, state: str = "open", draft: bool = False
 
 
 class MergeGitHubStub:
-    def __init__(self, *, merged: bool = False, state: str = "open", draft: bool = False, mergeable: bool | None = True, base_ref: str = "main") -> None:
-        self.pr = pr_payload(merged=merged, state=state, draft=draft, mergeable=mergeable, base_ref=base_ref)
+    def __init__(
+        self,
+        *,
+        merged: bool = False,
+        state: str = "open",
+        draft: bool = False,
+        mergeable: bool | None = True,
+        base_ref: str = "main",
+        head_ref: str = "gpt/fix-ci",
+        head_sha: str = HEAD_SHA,
+    ) -> None:
+        self.pr = pr_payload(
+            merged=merged,
+            state=state,
+            draft=draft,
+            mergeable=mergeable,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            head_sha=head_sha,
+        )
         self.merge_request: dict | None = None
 
     async def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict:
@@ -51,6 +81,12 @@ def make_service(github: MergeGitHubStub) -> PullRequestService:
     return PullRequestService(github, Policy(settings))
 
 
+def merge_request(**kwargs) -> MergePullRequestRequest:
+    values = {"pr_number": 10, "expected_head_sha": HEAD_SHA}
+    values.update(kwargs)
+    return MergePullRequestRequest(**values)
+
+
 def test_merge_pull_request_success() -> None:
     github = MergeGitHubStub()
     service = make_service(github)
@@ -59,12 +95,10 @@ def test_merge_pull_request_success() -> None:
         service.merge_pull_request(
             "acme",
             "demo",
-            MergePullRequestRequest(
-                pr_number=10,
+            merge_request(
                 commit_title="Merge PR #10",
                 commit_message="合并修复",
                 merge_method="squash",
-                expected_head_sha="2222222222222222222222222222222222222222",
             ),
         )
     )
@@ -76,7 +110,7 @@ def test_merge_pull_request_success() -> None:
     assert github.merge_request == {
         "commit_title": "Merge PR #10",
         "commit_message": "合并修复",
-        "sha": "2222222222222222222222222222222222222222",
+        "sha": HEAD_SHA,
         "merge_method": "squash",
     }
 
@@ -85,7 +119,7 @@ def test_merge_pull_request_can_target_gpt_base_branch() -> None:
     github = MergeGitHubStub(base_ref="gpt/parent")
     service = make_service(github)
 
-    response = asyncio.run(service.merge_pull_request("acme", "demo", MergePullRequestRequest(pr_number=10)))
+    response = asyncio.run(service.merge_pull_request("acme", "demo", merge_request()))
 
     assert response.merged is True
     assert response.pull_request.base_branch == "gpt/parent"
@@ -95,27 +129,51 @@ def test_merge_pull_request_can_target_arbitrary_base_branch() -> None:
     github = MergeGitHubStub(base_ref="release/2026.06")
     service = make_service(github)
 
-    response = asyncio.run(service.merge_pull_request("acme", "demo", MergePullRequestRequest(pr_number=10)))
+    response = asyncio.run(service.merge_pull_request("acme", "demo", merge_request()))
 
     assert response.merged is True
     assert response.pull_request.base_branch == "release/2026.06"
 
 
+def test_merge_pull_request_requires_expected_head_sha() -> None:
+    with pytest.raises(ValidationError):
+        MergePullRequestRequest(pr_number=10)
+
+
+def test_merge_pull_request_rejects_head_sha_mismatch() -> None:
+    service = make_service(MergeGitHubStub())
+
+    with pytest.raises(ApiError) as exc:
+        asyncio.run(service.merge_pull_request("acme", "demo", merge_request(expected_head_sha="9" * 40)))
+
+    assert exc.value.error_code == ErrorCode.GITHUB_CONFLICT
+    assert exc.value.message == "Pull request head SHA does not match expected_head_sha."
+
+
+def test_merge_pull_request_rejects_non_gpt_head_branch() -> None:
+    service = make_service(MergeGitHubStub(head_ref="feature/fix-ci"))
+
+    with pytest.raises(ApiError) as exc:
+        asyncio.run(service.merge_pull_request("acme", "demo", merge_request()))
+
+    assert exc.value.error_code == ErrorCode.BRANCH_NOT_ALLOWED
+
+
 def test_merge_pull_request_rejects_invalid_pr_state() -> None:
     closed_service = make_service(MergeGitHubStub(state="closed"))
     with pytest.raises(ApiError) as closed_exc:
-        asyncio.run(closed_service.merge_pull_request("acme", "demo", MergePullRequestRequest(pr_number=10)))
+        asyncio.run(closed_service.merge_pull_request("acme", "demo", merge_request()))
     assert closed_exc.value.error_code == ErrorCode.GITHUB_CONFLICT
     assert closed_exc.value.message == "Pull request is not open."
 
     draft_service = make_service(MergeGitHubStub(draft=True))
     with pytest.raises(ApiError) as draft_exc:
-        asyncio.run(draft_service.merge_pull_request("acme", "demo", MergePullRequestRequest(pr_number=10)))
+        asyncio.run(draft_service.merge_pull_request("acme", "demo", merge_request()))
     assert draft_exc.value.error_code == ErrorCode.GITHUB_CONFLICT
     assert draft_exc.value.message == "Draft pull requests cannot be merged."
 
     blocked_service = make_service(MergeGitHubStub(mergeable=False))
     with pytest.raises(ApiError) as blocked_exc:
-        asyncio.run(blocked_service.merge_pull_request("acme", "demo", MergePullRequestRequest(pr_number=10)))
+        asyncio.run(blocked_service.merge_pull_request("acme", "demo", merge_request()))
     assert blocked_exc.value.error_code == ErrorCode.GITHUB_CONFLICT
     assert blocked_exc.value.message == "Pull request is not mergeable."

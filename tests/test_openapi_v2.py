@@ -1,5 +1,11 @@
 from app.main import app
-from scripts.export_openapi import PUBLIC_OPERATION_IDS, collect_operation_ids, mark_all_operations_nonconsequential
+from scripts.export_openapi import (
+    CONSEQUENTIAL_OPERATION_IDS,
+    PUBLIC_OPERATION_IDS,
+    READ_ONLY_OPERATION_IDS,
+    collect_operation_ids,
+    mark_operations_by_risk,
+)
 
 
 def test_openapi_contains_only_v2_operation_ids():
@@ -8,56 +14,26 @@ def test_openapi_contains_only_v2_operation_ids():
     assert len(PUBLIC_OPERATION_IDS) == 29
 
 
-def test_hidden_and_removed_operation_ids_are_absent():
-    hidden_or_removed = {
-        "prepareWorkspaceMirror",
-        "prepareWorkspaceFromMirror",
-        "continueWorkBranch",
-        "listTree",
-        "exportRepoSnapshot",
-        "applyPatchAndCommit",
-        "commitFiles",
-        "getFile",
-        "getFileRange",
-        "getFiles",
-        "searchCode",
-        "compareRefs",
-        "listBranches",
-        "getBranch",
-        "getBranchProtection",
-        "getRepository",
-        "getDefaultBranch",
-        "rerunFailedJobs",
-        "rerunJob",
-        "getCiJob",
-    }
-    schema = app.openapi()
-    assert collect_operation_ids(schema).isdisjoint(hidden_or_removed)
+def test_openapi_risk_classification_is_complete_and_disjoint():
+    assert READ_ONLY_OPERATION_IDS.isdisjoint(CONSEQUENTIAL_OPERATION_IDS)
+    assert READ_ONLY_OPERATION_IDS | CONSEQUENTIAL_OPERATION_IDS == PUBLIC_OPERATION_IDS
 
 
-def test_hidden_workspace_branch_routes_are_not_registered():
-    removed_paths = {
-        "/repos/{owner}/{repo}/workspaces/prepare-mirror",
-        "/repos/{owner}/{repo}/workspaces/prepare-from-mirror",
-        "/repos/{owner}/{repo}/branches/continue-work-branch",
-    }
-    removed_names = {"prepare_workspace_mirror", "prepare_workspace_from_mirror", "continue_work_branch"}
-    route_paths = {getattr(route, "path", "") for route in app.routes}
-    route_names = {getattr(route, "name", "") for route in app.routes}
-
-    assert route_paths.isdisjoint(removed_paths)
-    assert route_names.isdisjoint(removed_names)
-
-
-def test_export_marks_all_public_operations_nonconsequential():
+def test_export_marks_operations_by_current_risk():
     schema = app.openapi()
 
-    mark_all_operations_nonconsequential(schema)
+    mark_operations_by_risk(schema)
+    operations = _operations_by_id(schema)
 
-    for path_item in schema["paths"].values():
-        for method, operation in path_item.items():
-            if method.lower() in {"get", "post", "put", "patch", "delete"} and "operationId" in operation:
-                assert operation["x-openai-isConsequential"] is False
+    for operation_id in READ_ONLY_OPERATION_IDS:
+        assert operations[operation_id]["x-openai-isConsequential"] is False
+    for operation_id in CONSEQUENTIAL_OPERATION_IDS:
+        assert operations[operation_id]["x-openai-isConsequential"] is True
+
+    assert operations["getRunLog"]["x-openai-isConsequential"] is False
+    assert operations["workspaceCommitAndPush"]["x-openai-isConsequential"] is True
+    assert operations["mergePullRequest"]["x-openai-isConsequential"] is True
+    assert operations["deleteCache"]["x-openai-isConsequential"] is True
 
 
 def test_workspace_exec_pwsh_response_excludes_workspace_change_summary():
@@ -76,6 +52,15 @@ def _schema_properties(schema: dict, path: str) -> set[str]:
     response_schema = schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
     schema_name = response_schema["$ref"].rsplit("/", 1)[-1]
     return set(schema["components"]["schemas"][schema_name]["properties"])
+
+
+def _operations_by_id(schema: dict) -> dict[str, dict]:
+    operations: dict[str, dict] = {}
+    for path_item in schema["paths"].values():
+        for method, operation in path_item.items():
+            if method.lower() in {"get", "post", "put", "patch", "delete"} and "operationId" in operation:
+                operations[operation["operationId"]] = operation
+    return operations
 
 
 def test_workspace_responses_exclude_implicit_state_fields():

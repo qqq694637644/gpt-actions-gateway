@@ -51,7 +51,7 @@ from app.workspace.text_ops import (
 )
 
 _ARTIFACTS_ROOT = ".gpt-artifacts"
-_ARTIFACTS_GITIGNORE_ENTRY = ".gpt-artifacts/"
+_ARTIFACTS_EXCLUDE_ENTRY = ".gpt-artifacts/"
 _ARTIFACT_PAGE_SIZE = 100
 _SAFE_ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -90,6 +90,14 @@ class WorkspaceService:
 
     async def exec_pwsh(self, owner: str, repo: str, workspace_id: str, request: WorkspaceExecPwshRequest) -> WorkspaceExecPwshResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)
+        if request.timeout_seconds is not None and request.timeout_seconds > self.settings.workspace_max_timeout_seconds:
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                "workspaceExecPwsh timeout_seconds exceeds the configured GPT Actions safety limit.",
+                status_code=422,
+                suggestion="Use a shorter timeout, split the work into smaller commands, or dispatch a workflow and inspect CI logs/artifacts.",
+                details={"requested_timeout_seconds": request.timeout_seconds, "max_timeout_seconds": self.settings.workspace_max_timeout_seconds},
+            )
         timeout = min(request.timeout_seconds or self.settings.workspace_default_timeout_seconds, self.settings.workspace_max_timeout_seconds)
         max_output = min(request.max_output_bytes or self.settings.workspace_max_output_bytes, self.settings.workspace_max_output_bytes)
         repo_dir = self.manager.repo_dir(workspace_id)
@@ -319,57 +327,110 @@ class WorkspaceService:
             current_branch = await self.manager.current_branch(repo_dir)
             if current_branch != request.branch:
                 raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Current workspace checkout is not the requested branch.", status_code=409, details={"current_branch": current_branch, "request_branch": request.branch})
+            current_head = await self.manager.head_sha(repo_dir)
             changed, _, conflicts = await self.manager.changed_files(repo_dir)
             if conflicts:
                 raise ApiError(ErrorCode.WORKSPACE_DIRTY, "Workspace has unresolved conflicts.", status_code=409, details={"conflicts": conflicts})
-            if not changed:
-                raise ApiError(ErrorCode.WORKSPACE_NO_CHANGES, "Workspace has no changes to commit.", status_code=409)
-            await self.manager.validate_changed_paths(repo_dir, changed)
-            paths = [self.policy.assert_workspace_path_allowed(path) for path in request.paths]
-            await self.manager.git.run(["git", "add", "--", *paths], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-            staged = await self.manager.staged_changed_files(repo_dir)
-            if not staged:
-                await self.manager.git.run(["git", "reset", "--mixed"], cwd=repo_dir)
-                raise ApiError(ErrorCode.WORKSPACE_NO_CHANGES, "Selected paths have no staged changes.", status_code=409)
-            await self.manager.validate_changed_paths(repo_dir, staged)
-            diff_stat_result = await self.manager.git.run(["git", "diff", "--cached", "--stat"], cwd=repo_dir)
-            diff_stat = diff_stat_result.stdout.strip()
-            previous_head = await self.manager.head_sha(repo_dir)
-            if request.dry_run:
-                await self.manager.git.run(["git", "reset", "--mixed"], cwd=repo_dir)
-                response = WorkspaceCommitAndPushResponse(
-                    previous_head_sha=previous_head,
-                    new_head_sha=previous_head,
-                    commit_sha=None,
-                    commit_url=None,
-                    changed_files=staged,
-                    diff_stat=diff_stat,
-                    pushed=False,
-                    dry_run=True,
-                )
-            else:
-                await self.manager.git.run(["git", "config", "user.name", self.settings.workspace_git_user_name], cwd=repo_dir)
-                await self.manager.git.run(["git", "config", "user.email", self.settings.workspace_git_user_email], cwd=repo_dir)
-                await self.manager.git.run(["git", "commit", "-m", request.commit_message], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-                new_head = await self.manager.head_sha(repo_dir)
-                auth_config = await self.github.git_auth_config()
-                push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
-                if push.exit_code != 0:
-                    raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
-                meta.head_sha = new_head
-                from app.workspace.models import save_meta
+            if not changed and current_head != remote_head:
+                if not await self.manager.is_ancestor(repo_dir, str(remote_head), current_head):
+                    raise ApiError(
+                        ErrorCode.WORKSPACE_HEAD_CHANGED,
+                        "Workspace has an unpushed local commit that is not based on the expected remote head.",
+                        status_code=409,
+                        suggestion="Reset or refresh the workspace before retrying the push.",
+                        details={"expected_head_sha": request.expected_head_sha, "remote_head_sha": remote_head, "local_head_sha": current_head},
+                    )
+                committed = await self.manager.committed_changed_files_between(repo_dir, str(remote_head), current_head)
+                await self.manager.validate_changed_paths(repo_dir, committed)
+                diff_stat = await self.manager.diff_stat_between(repo_dir, str(remote_head), current_head)
+                if request.dry_run:
+                    response = WorkspaceCommitAndPushResponse(
+                        previous_head_sha=str(remote_head),
+                        new_head_sha=current_head,
+                        commit_sha=current_head,
+                        commit_url=None,
+                        changed_files=committed,
+                        diff_stat=diff_stat,
+                        pushed=False,
+                        dry_run=True,
+                    )
+                else:
+                    auth_config = await self.github.git_auth_config()
+                    push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
+                    if push.exit_code != 0:
+                        raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
+                    meta.head_sha = current_head
+                    from app.workspace.models import save_meta
 
-                save_meta(self.manager.workspace_dir(workspace_id), meta)
-                response = WorkspaceCommitAndPushResponse(
-                    previous_head_sha=previous_head,
-                    new_head_sha=new_head,
-                    commit_sha=new_head,
-                    commit_url=f"https://github.com/{owner}/{repo}/commit/{new_head}",
-                    changed_files=staged,
-                    diff_stat=diff_stat,
-                    pushed=True,
-                    dry_run=False,
+                    save_meta(self.manager.workspace_dir(workspace_id), meta)
+                    response = WorkspaceCommitAndPushResponse(
+                        previous_head_sha=str(remote_head),
+                        new_head_sha=current_head,
+                        commit_sha=current_head,
+                        commit_url=f"https://github.com/{owner}/{repo}/commit/{current_head}",
+                        changed_files=committed,
+                        diff_stat=diff_stat,
+                        pushed=True,
+                        dry_run=False,
+                    )
+            elif current_head != remote_head:
+                raise ApiError(
+                    ErrorCode.WORKSPACE_DIRTY,
+                    "Workspace has unpushed local commits and additional uncommitted changes.",
+                    status_code=409,
+                    suggestion="Retry commitAndPush before making more edits, or reset the workspace to the remote head.",
+                    details={"expected_head_sha": request.expected_head_sha, "remote_head_sha": remote_head, "local_head_sha": current_head},
                 )
+            if not changed:
+                if current_head == remote_head:
+                    raise ApiError(ErrorCode.WORKSPACE_NO_CHANGES, "Workspace has no changes to commit.", status_code=409)
+            else:
+                await self.manager.validate_changed_paths(repo_dir, changed)
+                paths = [self.policy.assert_workspace_path_allowed(path) for path in request.paths]
+                await self.manager.git.run(["git", "add", "--", *paths], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+                staged = await self.manager.staged_changed_files(repo_dir)
+                if not staged:
+                    await self.manager.git.run(["git", "reset", "--mixed"], cwd=repo_dir)
+                    raise ApiError(ErrorCode.WORKSPACE_NO_CHANGES, "Selected paths have no staged changes.", status_code=409)
+                await self.manager.validate_changed_paths(repo_dir, staged)
+                diff_stat_result = await self.manager.git.run(["git", "diff", "--cached", "--stat"], cwd=repo_dir)
+                diff_stat = diff_stat_result.stdout.strip()
+                previous_head = current_head
+                if request.dry_run:
+                    await self.manager.git.run(["git", "reset", "--mixed"], cwd=repo_dir)
+                    response = WorkspaceCommitAndPushResponse(
+                        previous_head_sha=previous_head,
+                        new_head_sha=previous_head,
+                        commit_sha=None,
+                        commit_url=None,
+                        changed_files=staged,
+                        diff_stat=diff_stat,
+                        pushed=False,
+                        dry_run=True,
+                    )
+                else:
+                    await self.manager.git.run(["git", "config", "user.name", self.settings.workspace_git_user_name], cwd=repo_dir)
+                    await self.manager.git.run(["git", "config", "user.email", self.settings.workspace_git_user_email], cwd=repo_dir)
+                    await self.manager.git.run(["git", "commit", "-m", request.commit_message], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
+                    new_head = await self.manager.head_sha(repo_dir)
+                    auth_config = await self.github.git_auth_config()
+                    push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
+                    if push.exit_code != 0:
+                        raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
+                    meta.head_sha = new_head
+                    from app.workspace.models import save_meta
+
+                    save_meta(self.manager.workspace_dir(workspace_id), meta)
+                    response = WorkspaceCommitAndPushResponse(
+                        previous_head_sha=previous_head,
+                        new_head_sha=new_head,
+                        commit_sha=new_head,
+                        commit_url=f"https://github.com/{owner}/{repo}/commit/{new_head}",
+                        changed_files=staged,
+                        diff_stat=diff_stat,
+                        pushed=True,
+                        dry_run=False,
+                    )
         self._audit(
             operation_id="workspaceCommitAndPush",
             owner=owner,
@@ -428,10 +489,10 @@ class WorkspaceService:
         manifest_path = target_dir / "manifest.json"
         target_dir_rel = _relative_repo_path(repo_dir, target_dir)
         manifest_path_rel = _relative_repo_path(repo_dir, manifest_path)
-        gitignore_path_rel = ".gitignore"
+        gitignore_path_rel = ".git/info/exclude"
 
         with self.manager.lock(workspace_id):
-            gitignore_updated = _ensure_gpt_artifacts_gitignore(repo_dir)
+            gitignore_updated = _ensure_gpt_artifacts_local_exclude(repo_dir)
             existing_manifest = _read_artifact_manifest(manifest_path)
             skipped = _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
             if skipped:
@@ -597,7 +658,7 @@ def _artifact_manifest_records(raw_artifacts: list[dict[str, Any]]) -> list[dict
     if missing_digest:
         raise ApiError(
             ErrorCode.GITHUB_ERROR,
-            "GitHub artifact payload is missing digest; refusing to sync without digest.",
+            "GitHub artifact metadata did not include digest, so the gateway refused to sync it safely. Use getRunLog/job logs instead, or enable an explicit unsafe artifact sync mode after review.",
             status_code=502,
             details={"missing_artifacts": missing_digest},
         )
@@ -615,21 +676,22 @@ def _artifact_fingerprint_inputs(artifacts: list[dict[str, Any]]) -> list[dict[s
     ]
 
 
-def _ensure_gpt_artifacts_gitignore(repo_dir: Path) -> bool:
-    gitignore = repo_dir / ".gitignore"
-    if gitignore.exists() and not gitignore.is_file():
-        raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Repository .gitignore exists but is not a file.", status_code=409)
-    text = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
-    if _gitignore_has_gpt_artifacts_entry(text):
+def _ensure_gpt_artifacts_local_exclude(repo_dir: Path) -> bool:
+    exclude = repo_dir / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    text = exclude.read_text(encoding="utf-8", errors="replace") if exclude.exists() else ""
+    if _exclude_has_gpt_artifacts_entry(text):
         return False
     if text and not text.endswith("\n"):
         text += "\n"
-    text += _ARTIFACTS_GITIGNORE_ENTRY + "\n"
-    gitignore.write_text(text, encoding="utf-8")
+    if text.strip():
+        text += "\n"
+    text += "# GPT Actions Gateway synced artifacts\n" + _ARTIFACTS_EXCLUDE_ENTRY + "\n"
+    exclude.write_text(text, encoding="utf-8")
     return True
 
 
-def _gitignore_has_gpt_artifacts_entry(text: str) -> bool:
+def _exclude_has_gpt_artifacts_entry(text: str) -> bool:
     accepted = {
         ".gpt-artifacts",
         ".gpt-artifacts/",

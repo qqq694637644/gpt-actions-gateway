@@ -231,6 +231,8 @@ class CIService:
 
         deleted_count = 0
         if not request.dry_run:
+            self._assert_cache_delete_confirmed(request, by_cache_id=False)
+            self._assert_selected_caches_match_expected(selected, request)
             for cache in selected:
                 await self.github.delete_actions_cache(owner, repo, cache.cache_id)
                 deleted_count += 1
@@ -420,6 +422,8 @@ class CIService:
                 warning="Dry run only; requested cache_id was not verified against GitHub. Use listCaches to inspect metadata before deleting.",
             )
 
+        self._assert_cache_delete_confirmed(request, by_cache_id=True)
+
         try:
             await self.github.delete_actions_cache(owner, repo, cache_id)
         except ApiError as exc:
@@ -453,6 +457,54 @@ class CIService:
         if any(ch in normalized for ch in "*?[]"):
             raise ApiError(ErrorCode.VALIDATION_ERROR, "Wildcard cache deletion is not allowed; use an explicit key prefix or cache_id.", status_code=422)
         return normalized
+
+    def _assert_cache_delete_confirmed(self, request: DeleteCacheRequest, *, by_cache_id: bool) -> None:
+        if request.dry_run or request.confirm:
+            return
+        if by_cache_id and self._has_expected_cache_metadata(request):
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                "cache_id deletion cannot verify expected cache metadata in deleteCache.",
+                status_code=422,
+                suggestion="Use listCaches to inspect id/key/ref/size, then retry with confirm=true, or delete by key/ref with expected metadata.",
+            )
+        if self._has_expected_cache_metadata(request):
+            return
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "Actual cache deletion requires confirm=true or expected cache metadata.",
+            status_code=422,
+            suggestion="Run dry_run first, inspect selected_caches, then retry with confirm=true or exact expected_key/expected_ref/expected_size_in_bytes.",
+        )
+
+    @staticmethod
+    def _has_expected_cache_metadata(request: DeleteCacheRequest) -> bool:
+        return request.expected_key is not None or request.expected_ref is not None or request.expected_size_in_bytes is not None
+
+    def _assert_selected_caches_match_expected(self, selected: list[ActionCache], request: DeleteCacheRequest) -> None:
+        expected_ref = self._cache_ref_for_github(request.expected_ref) if request.expected_ref else None
+        mismatches: list[dict[str, Any]] = []
+        for cache in selected:
+            mismatch: dict[str, Any] = {"cache_id": cache.cache_id}
+            if request.expected_key is not None and cache.key != request.expected_key:
+                mismatch["expected_key"] = request.expected_key
+                mismatch["actual_key"] = cache.key
+            if expected_ref is not None and cache.ref != expected_ref:
+                mismatch["expected_ref"] = expected_ref
+                mismatch["actual_ref"] = cache.ref
+            if request.expected_size_in_bytes is not None and cache.size_in_bytes != request.expected_size_in_bytes:
+                mismatch["expected_size_in_bytes"] = request.expected_size_in_bytes
+                mismatch["actual_size_in_bytes"] = cache.size_in_bytes
+            if len(mismatch) > 1:
+                mismatches.append(mismatch)
+        if mismatches:
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                "Selected cache metadata did not match expected metadata.",
+                status_code=409,
+                suggestion="Re-run listCaches and retry with current expected metadata after review.",
+                details={"mismatches": mismatches},
+            )
 
     def _record_cache_delete_audit(self, owner: str, repo: str, request: DeleteCacheRequest, response: DeleteCacheResponse) -> None:
         if not self.audit:

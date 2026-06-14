@@ -1,61 +1,121 @@
-# GPT Actions GitHub Gateway v2
+# GPT Actions GitHub Gateway
 
-Workspace-first FastAPI gateway for maintaining GitHub repositories through Custom GPT Actions.
+## What this is
 
-v2 uses a backend Git workspace as the only code-maintenance surface:
+GPT Actions GitHub Gateway is a personal GitHub implementation platform for repository maintenance through GPT Actions. It is designed around a workspace-first flow:
 
 ```text
-GPT Action -> Gateway -> backend Git workspace -> controlled PowerShell / Git -> GitHub PR / CI
+workspace → code changes → PR → CI → merge/ops
 ```
 
-GPT can inspect and edit code by running controlled PowerShell inside a prepared workspace. The gateway owns Git credentials, branch checks, path checks, local change inspection, commit creation, push, PR operations, CI status, logs, artifacts, and audit records.
+The gateway owns GitHub credentials and exposes task-oriented operations for reading repository state, preparing backend Git workspaces, making controlled local edits, committing to `gpt/*` branches, opening or updating PRs, inspecting CI, syncing safe artifacts, dispatching/rerunning workflows, merging reviewed PRs, and maintaining Actions caches.
 
-## Public API surface
+`workspaceExecPwsh` runs controlled PowerShell from the repository root. It does not receive GitHub publish credentials; publishing is only available through explicit gateway operations such as `workspaceCommitAndPush`.
 
-### Workspace
+## Safety model
 
-- `prepareWorkspace`
-- `workspaceExecPwsh`
-- `workspaceStatus`
-- `workspaceDiff`
-- `workspaceApplyPatch`
-- `workspaceWriteFile`
-- `workspaceCommitAndPush`
-- `workspaceReset`
+The platform is intentionally conservative. The main safety boundaries are:
 
-### Branch
+- **Repo allowlist:** by default, only repositories in `ALLOWED_REPOS` are accepted. `ALLOW_ALL_REPOS=true` is an explicit broadening switch.
+- **`gpt/*` write boundary:** work branches and PR heads must use `WRITE_BRANCH_PREFIX`, normally `gpt/`. Direct writes to `main`, `master`, `develop`, `release/*`, `production/*`, and `hotfix/*` are refused.
+- **`expected_head_sha`:** publishing and merge flows pin the head SHA that the caller reviewed. If the remote branch or PR head changes, the operation is rejected instead of silently racing.
+- **Path policy:** generated, dependency, VCS, binary-like, credential, certificate, and secret paths are blocked. Workflow edits are blocked unless `ALLOW_WORKFLOW_EDIT=true`.
+- **Secret policy:** runtime environment exposure is minimized; workspace commands cannot enumerate or read sensitive environment variables, GitHub secrets, or GitHub CLI auth state.
+- **Consequential actions:** OpenAPI marks write, publish, workflow, merge, artifact sync, and cache delete operations as consequential. Read-only diagnostics stay non-consequential.
+- **Audit:** operations record request metadata, branch/head context, changed files, command hashes, and cache/workspace decisions where applicable.
+- **Idempotency:** mutating operations accept `idempotency_key` so retries can safely return the same response when the request payload is identical.
 
-- `createWorkBranch`
+## Capability layers
 
-### Pull Request
+### L0 read-only investigation
 
-- `createPullRequest`
-- `getPullRequest`
-- `listPullRequests`
-- `getPullRequestFiles`
-- `updatePullRequest`
-- `mergePullRequest`
-- `commentPullRequest`
+Use `prepareWorkspace` with `base_ref` for read-only repository investigation, then inspect with `workspaceExecPwsh`, `workspaceStatus`, `workspaceDiff`, PR readers, CI readers, job logs, run logs, artifact listing, and cache listing.
 
-### CI, logs, and artifacts
+Typical operations: `prepareWorkspace`, `workspaceExecPwsh`, `workspaceStatus`, `workspaceDiff`, `getPullRequest`, `listPullRequests`, `getPullRequestFiles`, `queryCiStatus`, `queryFailedCiLog`, `getCiRun`, `getCiJobs`, `getJobLog`, `getRunLog`, `listArtifacts`, `listCaches`.
 
-- `queryCiStatus`
-- `dispatchWorkflow`
-- `queryFailedCiLog`
-- `getCiRun`
-- `rerunWorkflowRun`
-- `getCiJobs`
-- `rerunWorkflowJob`
-- `getJobLog`
-- `getRunLog`
-- `listArtifacts`
-- `syncRunArtifactsToWorkspace`
-- `listCaches`
-- `deleteCache`
+### L1 local workspace changes
+
+Use a prepared `gpt/*` workspace for local-only edits. `workspaceApplyPatch` is preferred for small auditable text patches. `workspaceWriteFile` is for complete UTF-8 text file creation or replacement. These operations do not commit, push, create PRs, or trigger CI.
+
+Typical operations: `workspaceApplyPatch`, `workspaceWriteFile`, `workspaceReset`, `syncRunArtifactsToWorkspace`.
+
+### L2 publish / PR
+
+Use `createWorkBranch`, `workspaceCommitAndPush`, and PR operations to publish reviewed workspace changes to GitHub. Publishing requires the branch to be under `gpt/*` and the remote branch head to equal `expected_head_sha`.
+
+Typical operations: `createWorkBranch`, `workspaceCommitAndPush`, `createPullRequest`, `updatePullRequest`, `commentPullRequest`.
+
+### L3 CI diagnostics and workflow operations
+
+Use CI status, failed-log summaries, full job logs, run-log archives, safe artifact sync, workflow dispatch, and reruns to diagnose and unblock PRs. Workflow dispatch and rerun operations are consequential because they change external CI state.
+
+Typical operations: `queryCiStatus`, `queryFailedCiLog`, `getCiRun`, `getCiJobs`, `getJobLog`, `getRunLog`, `listArtifacts`, `syncRunArtifactsToWorkspace`, `dispatchWorkflow`, `rerunWorkflowRun`, `rerunWorkflowJob`.
+
+### L4 merge and cache deletion
+
+Merge and cache deletion are high-risk operations. Merge requires a current `expected_head_sha` and a non-draft open PR whose head branch is still `gpt/*`. Cache deletion defaults to dry run and actual deletion requires explicit confirmation or verified expected metadata.
+
+Typical operations: `mergePullRequest`, `deleteCache`.
+
+## Standard implementation flow
+
+1. **Create branch:** call `createWorkBranch` from the intended base ref.
+2. **Prepare workspace:** call `prepareWorkspace` with the returned `gpt/*` branch and a `ws_` workspace id when deterministic reuse is helpful.
+3. **Inspect:** use `workspaceExecPwsh` to list structure, search relevant files, and read source/tests/config before editing.
+4. **Edit:** use `workspaceApplyPatch` for small text edits or `workspaceWriteFile` for full UTF-8 file replacement.
+5. **Validate:** run targeted tests, lint, type checks, schema checks, or the smallest meaningful smoke test inside the workspace.
+6. **Diff:** call `workspaceDiff` before publishing.
+7. **Commit/push:** call `workspaceCommitAndPush` with the latest `expected_head_sha`.
+8. **Create PR:** call `createPullRequest`, or reuse the existing open PR returned by the API.
+9. **Query CI:** call `queryCiStatus` by PR number, branch, commit SHA, or workflow dispatch query hint.
+
+If a commit was created locally but push failed, retrying `workspaceCommitAndPush` with the same expected remote head can recover by pushing the existing local commit instead of creating a duplicate commit.
+
+## Existing PR flow
+
+For an existing PR, call `getPullRequest`, then `prepareWorkspace` with `source_pr_number`. The gateway only prepares same-repository PR heads. After inspection and edits, run validation, inspect the diff, call `workspaceCommitAndPush` on the PR head branch, then query CI by PR number.
+
+Use `updatePullRequest` for title/body/base updates and `commentPullRequest` for review notes or status summaries. Closing a PR uses `updatePullRequest(state="closed")`; this does not delete the remote branch.
+
+## CI failure flow
+
+Start with `queryCiStatus`. If a run failed, use `queryFailedCiLog` for a concise failure summary. Drill down with `getCiJobs`, `getJobLog`, or `getRunLog` when the summary is not enough.
+
+After diagnosing, return to the workspace, make the fix, run local validation, review `workspaceDiff`, publish with `workspaceCommitAndPush`, and query CI again. Do not infer job-level status from `queryCiStatus`; use `getCiJobs` for job details.
+
+## Artifact analysis flow
+
+Use `listArtifacts` first to see artifact ids, names, sizes, and digest metadata. Use `syncRunArtifactsToWorkspace` only for completed workflow runs. Synced artifacts are extracted under `.gpt-artifacts/runs/<run_id>/` and ignored through `.git/info/exclude`, so artifact analysis does not create a committable repository diff.
+
+Artifact sync is strict about GitHub's artifact digest. If GitHub artifact metadata does not include a digest, the gateway refuses to sync safely with this error:
+
+```text
+GitHub artifact metadata did not include digest, so the gateway refused to sync it safely. Use getRunLog/job logs instead, or enable an explicit unsafe artifact sync mode after review.
+```
+
+That error means the artifact metadata is incomplete for safe sync; it does not mean the artifact is absent. Use `getRunLog` or `getJobLog` instead, or add an explicitly reviewed unsafe sync mode before changing this behavior.
+
+## Workflow dispatch / rerun flow
+
+Use `dispatchWorkflow` for `workflow_dispatch` workflows when an empty commit is not appropriate. GitHub accepts dispatch requests without returning the new `run_id`, so the response includes a `query_hint`. Pass that hint to `queryCiStatus` to find the run.
+
+Use `rerunWorkflowJob` for a single clearly flaky job. Use `rerunWorkflowRun` when the whole run failed due to runner, network, cache, or platform issues. Avoid reruns when the logs show a deterministic code failure.
+
+## Cache maintenance flow
+
+Start with `listCaches` and narrow by key/ref. Then run `deleteCache` with its default `dry_run=true` to inspect the selected cache ids, keys, refs, and sizes.
+
+Actual deletion requires either `confirm=true` after review or exact expected metadata such as `expected_key`, `expected_ref`, and `expected_size_in_bytes`. Selectors that match more entries than `max_delete` are refused. Deleting by `cache_id` does not fetch metadata; inspect with `listCaches` first, then retry with `confirm=true`.
+
+## Merge flow
+
+Only merge when the user explicitly asks for it. Before merging, call `getPullRequest` and verify the PR is open, not draft, mergeable, based on the intended branch, and still has a `gpt/*` head branch. Then call `mergePullRequest` with the current `expected_head_sha` and the intended merge method.
+
+If the PR head changes between review and merge, the gateway rejects the merge. Re-read the PR and CI state before retrying.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set at least:
+### Required
 
 ```bash
 APP_ENV=production
@@ -63,11 +123,25 @@ PUBLIC_BASE_URL=https://gateway.example.com
 GPT_ACTION_SECRET=replace-with-a-long-random-secret
 GITHUB_AUTH_MODE=pat
 GITHUB_TOKEN=replace-with-your-github-token
+GITHUB_GIT_USERNAME=octocat
 ALLOWED_REPOS=owner/project-a
 WORKSPACE_SHELL=pwsh
 ```
 
-Important workspace settings:
+### Security
+
+```bash
+ALLOW_ALL_REPOS=false
+READ_BRANCH_ALLOWLIST=main,master,develop,gpt/*
+WRITE_BRANCH_PREFIX=gpt/
+DEFAULT_BASE_BRANCH=main
+ALLOW_WORKFLOW_EDIT=false
+ALLOW_DELETE_FILES=false
+```
+
+Set `ALLOW_ALL_REPOS=true`, `ALLOW_WORKFLOW_EDIT=true`, or `ALLOW_DELETE_FILES=true` only after reviewing the operational risk.
+
+### Workspace limits
 
 ```bash
 WORKSPACE_ROOT=./data/workspaces
@@ -84,234 +158,81 @@ WORKSPACE_MAX_COUNT=50
 WORKSPACE_ALLOW_NETWORK=false
 WORKSPACE_GIT_USER_NAME=gpt-actions-gateway
 WORKSPACE_GIT_USER_EMAIL=gpt-actions-gateway@users.noreply.github.com
+```
+
+`workspaceExecPwsh.timeout_seconds` must not exceed `WORKSPACE_MAX_TIMEOUT_SECONDS`. Longer work should be split into smaller commands or moved to CI/workflow dispatch.
+
+### Python workspace support
+
+```bash
 WORKSPACE_PYTHON_VENV_ENABLED=true
 WORKSPACE_PYTHON_VENV_DIR=.venv
 WORKSPACE_PYTHON_VENV_PYTHON="py -3.13"
 WORKSPACE_PYTHON_AUTO_GITIGNORE=true
 WORKSPACE_PYTHON_AUTO_ACTIVATE=true
-WORKSPACE_PYTHON_AUTO_INSTALL=false
 ```
 
-When `WORKSPACE_PYTHON_VENV_ENABLED=true`, `prepareWorkspace` automatically prepares a repository-root Python virtual environment for writable `gpt/*` branches and same-repository PR heads. It writes `.venv/` to `.gitignore` when missing, removes accidentally tracked `.venv` files from the Git index with `git rm --cached` while keeping local files, and creates `.venv` with the configured Python command. Existing virtual environments are validated instead of silently accepted. `workspaceExecPwsh` then activates the virtual environment by prepending `.venv/Scripts` or `.venv/bin` to `PATH`; missing, incomplete, or non-executable virtual environments fail before the user script runs. Dependency installation is not implemented yet, so `WORKSPACE_PYTHON_AUTO_INSTALL=true` is rejected until a dependency bootstrap flow is added.
+When enabled, writable `gpt/*` workspaces get a local Python virtual environment. The venv path is ignored through `.git/info/exclude`, not a tracked `.gitignore` edit. `workspaceExecPwsh` activates the venv before running user scripts when auto-activation is enabled. Dependency auto-install is not part of the current configuration surface.
 
-## Standard workflow
-
-### 1. Create a work branch
+### Advanced
 
 ```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/branches/create-work-branch" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "base_ref": "main",
-    "purpose_slug": "fix-ci"
-  }'
+MAX_LOG_BYTES=80000
+MAX_LOG_LINES=500
+MAX_BLOB_READ_BYTES=2MB
+RATE_LIMIT_PER_MINUTE=60
+AUDIT_DB_URL=sqlite:///./data/audit.db
+REQUEST_TIMEOUT_SECONDS=30
+GITHUB_API_BASE_URL=https://api.github.com
+GITHUB_API_VERSION=2026-03-10
+GITHUB_USE_ENV_PROXY=false
 ```
-
-### 2. Prepare the workspace
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/prepare" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "branch": "gpt/fix-ci-20260531-ab12cd",
-    "refresh": true,
-    "clean": false,
-    "idempotency_key": "task-fix-ci-prepare"
-  }'
-```
-
-### 3. Inspect, edit, and test inside the workspace
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/exec-pwsh" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "script": "git status --short; Get-Content pyproject.toml; pytest",
-    "timeout_seconds": 120,
-    "max_output_bytes": 80000,
-    "allow_network": false
-  }'
-```
-
-`workspaceExecPwsh` always runs from the repository root. It does not receive GitHub credentials and cannot publish code directly.
-
-For small auditable edits, use `workspaceApplyPatch` instead of running ad-hoc file mutation scripts:
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/apply-patch" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "patch": "*** Begin Patch\n*** Update File: README.md\n@@\n-before\n+after\n*** End Patch\n",
-    "dry_run": false,
-    "allow_delete": false
-  }'
-```
-
-For a single generated UTF-8 text file, use `workspaceWriteFile`:
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/write-file" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "path": "docs/ci.md",
-    "content": "# CI\n",
-    "mode": "create_only",
-    "line_ending": "lf",
-    "dry_run": false
-  }'
-```
-
-Both endpoints only modify the local workspace. They never commit, push, create PRs, or trigger CI.
-
-### 4. Review current state
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/status" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"refresh": false}'
-```
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/diff" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"paths": ["."], "stat_only": false, "max_bytes": 200000}'
-```
-
-### 5. Commit and push
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/workspaces/ws_abc123/commit-and-push" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "branch": "gpt/fix-ci-20260531-ab12cd",
-    "expected_head_sha": "1111111111111111111111111111111111111111",
-    "commit_message": "Fix CI setup",
-    "paths": ["."],
-    "dry_run": false,
-    "idempotency_key": "task-fix-ci-commit-1"
-  }'
-```
-
-The gateway refuses to publish unless the remote branch head equals `expected_head_sha`, the branch is under `gpt/`, changed paths pass policy, and all selected changes are safe to commit.
-
-### 6. Create or reuse a PR
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/create" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "head_branch": "gpt/fix-ci-20260531-ab12cd",
-    "base_branch": "main",
-    "title": "Fix CI setup",
-    "body": "Created through GPT Actions Gateway v2."
-  }'
-```
-
-### 7. Merge the PR
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/pulls/merge" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "pr_number": 10,
-    "merge_method": "squash",
-    "commit_title": "Fix CI setup",
-    "commit_message": "Merge PR #10"
-  }'
-```
-
-The gateway only merges open, non-draft PRs whose head branch is still a `gpt/*` work branch.
-
-### 8. Query CI and logs
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/status/query" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"pr_number": 10}'
-```
-
-When CI fails, call `queryFailedCiLog`, then drill into job logs, run logs, or sync run artifacts into `.gpt-artifacts/` with `syncRunArtifactsToWorkspace`. Use `workspaceExecPwsh` again to inspect the downloaded files, fix code in the same workspace, and publish the next commit through `workspaceCommitAndPush`.
-
-To trigger a `workflow_dispatch` workflow without creating an empty commit, call `dispatchWorkflow` and then query by the returned `query_hint`:
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/workflows/dispatch" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "workflow_id": "pascal-ci.yml",
-    "ref": "gpt/fix-ci-20260531-ab12cd",
-    "inputs": {"force_rebuild": "true"},
-    "idempotency_key": "task-fix-ci-dispatch-1"
-  }'
-```
-
-To rerun CI after runner, network, or cache flakiness, use `rerunWorkflowRun` for the whole run or `rerunWorkflowJob` for one failed job:
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/runs/rerun" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"run_id": 123456789, "enable_debug_logging": false}'
-```
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/jobs/rerun" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"job_id": 987654321, "enable_debug_logging": false}'
-```
-
-To inspect and safely clear GitHub Actions caches, list matching caches first, dry run the delete, then delete by `cache_id`:
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/list" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"key": "ce-lib-", "ref": "refs/heads/gpt/fix-ci-20260531-ab12cd"}'
-```
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/delete" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_id": 12345, "dry_run": true}'
-```
-
-```bash
-curl -X POST "$PUBLIC_BASE_URL/repos/acme/demo/ci/caches/delete" \
-  -H "Authorization: Bearer $GPT_ACTION_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"cache_id": 12345, "dry_run": false, "idempotency_key": "task-delete-cache-12345"}'
-```
-
-## Security model
-
-- Writes are limited to `gpt/*` branches.
-- The gateway refuses sensitive paths such as `.env*`, certificates, credential directories, dependency directories, generated directories, and `.git` internals.
-- Workflow files are blocked unless `ALLOW_WORKFLOW_EDIT=true`.
-- `workspaceApplyPatch` and `workspaceWriteFile` reject absolute paths, `..` traversal, `.git` internals, sensitive paths, binary content, oversized payloads, and deletes unless explicitly allowed by request and backend policy.
-- `workspaceExecPwsh` blocks direct publish commands, GitHub CLI authentication, secret operations, host environment enumeration, SSH/SCP, and network commands unless server policy allows network access.
-- GitHub credentials are used only by internal gateway operations.
-- Workspace operations are recorded in the audit database.
 
 ## Development
 
+Install development dependencies and run the test suite:
+
 ```bash
 python -m pip install -e '.[dev]'
-pytest
+pytest -q
+```
+
+Validate and export the public OpenAPI schema:
+
+```bash
 python scripts/export_openapi.py
 ```
 
-`python scripts/export_openapi.py` validates that the generated schema contains exactly the v2 public operation IDs.
+The export script validates the public operation id set and applies `x-openai-isConsequential` according to the current risk model.
+
+## Appendix: gateway base URL troubleshooting
+
+When GPT or an external Action cannot call the gateway and the server appears to receive nothing, troubleshoot the public base URL and path prefix before debugging business logic.
+
+Start with the health endpoint:
+
+```bash
+curl -i https://<public-host>/<prefix>/healthz
+```
+
+Then call a business route without authentication:
+
+```bash
+curl -i -X POST https://<public-host>/<prefix>/repos/<owner>/<repo>/pulls/get
+```
+
+Interpretation:
+
+- `/healthz` returning `200` means the public entrypoint and prefix mapping are basically working.
+- A business route returning the gateway's own `401 AUTH_FAILED` JSON means the request reached FastAPI and route matching works.
+- If GPT reports `403` or a client response error but uvicorn has no matching access log, prioritize `PUBLIC_BASE_URL`, reverse proxy, ngrok/Caddy prefix mapping, and cached OpenAPI server URLs.
+
+Useful conclusion template:
+
+```text
+Manual validation:
+- GET /github/healthz returned 200.
+- POST /github/repos/.../pulls/get without token returned 401 AUTH_FAILED.
+
+This rules out the public host, /github prefix mapping, and FastAPI routing. Next check the GPT Action Authorization header, cached schema/server URL, or external proxy interception.
+```

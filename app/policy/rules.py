@@ -109,7 +109,15 @@ class Policy:
             return
         full_name = f"{owner}/{repo}".lower()
         allowed = self.settings.allowed_repo_set
-        if allowed and full_name not in allowed:
+        if not allowed:
+            raise ApiError(
+                ErrorCode.REPO_NOT_ALLOWED,
+                "No repositories are allowed by configuration.",
+                status_code=403,
+                suggestion="Set ALLOWED_REPOS or set ALLOW_ALL_REPOS=true only after review.",
+                details={"repo": full_name},
+            )
+        if full_name not in allowed:
             raise ApiError(
                 ErrorCode.REPO_NOT_ALLOWED,
                 f"Repository {owner}/{repo} is not allowed.",
@@ -152,10 +160,6 @@ class Policy:
         if path is None or not path.strip():
             return None
         return normalize_path(path)
-
-    def is_excluded_tree_entry(self, path: str) -> bool:
-        parts = PurePosixPath(path.replace("\\", "/")).parts
-        return any(part in self.settings.excluded_dir_names for part in parts)
 
     def assert_write_path_allowed(self, path: str, *, operation: str = "upsert") -> str:
         normalized = normalize_path(path)

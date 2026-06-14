@@ -8,7 +8,9 @@ from app.policy.rules import Policy, normalize_path, sanitize_purpose_slug
 
 
 def make_policy(**kwargs) -> Policy:
-    return Policy(Settings(gpt_action_secret="secret", allowed_repos="acme/demo", **kwargs))
+    values = {"gpt_action_secret": "secret", "allowed_repos": "acme/demo"}
+    values.update(kwargs)
+    return Policy(Settings(**values))
 
 
 def test_normalize_path_rejects_traversal() -> None:
@@ -27,6 +29,16 @@ def test_repo_allowlist() -> None:
 def test_repo_allowlist_can_be_disabled() -> None:
     policy = make_policy(allow_all_repos=True)
     policy.assert_repo_allowed("acme", "other")
+
+
+def test_empty_repo_allowlist_rejects_when_allow_all_repos_is_false() -> None:
+    policy = make_policy(allowed_repos="", allow_all_repos=False)
+
+    with pytest.raises(ApiError) as exc:
+        policy.assert_repo_allowed("acme", "demo")
+
+    assert exc.value.error_code == ErrorCode.REPO_NOT_ALLOWED
+    assert exc.value.message == "No repositories are allowed by configuration."
 
 
 def test_write_branch_policy() -> None:
