@@ -4,7 +4,7 @@ import re
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?b?)?\s*$", re.IGNORECASE)
@@ -92,7 +92,6 @@ class Settings(BaseSettings):
     workspace_python_venv_python: str = "py -3.13"
     workspace_python_auto_gitignore: bool = True
     workspace_python_auto_activate: bool = True
-    workspace_python_auto_install: bool = False
 
     rate_limit_per_minute: int = 60
     audit_db_url: str = "sqlite:///./data/audit.db"
@@ -133,12 +132,6 @@ class Settings(BaseSettings):
         if not command:
             raise ValueError("workspace_python_venv_python must not be empty")
         return command
-
-    @model_validator(mode="after")
-    def _reject_unimplemented_python_auto_install(self) -> Settings:
-        if self.workspace_python_auto_install:
-            raise ValueError("WORKSPACE_PYTHON_AUTO_INSTALL is not implemented; keep it false until dependency bootstrap is added")
-        return self
 
     @property
     def secrets(self) -> list[str]:

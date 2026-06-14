@@ -43,6 +43,7 @@ class CIGitHubStub:
         self.cache_list_calls: list[dict | None] = []
         self.run_zip = make_zip({"job1/1_build.txt": "build ok\nwarning\n", "job2/test.log": "tests passed\n"})
         self.artifact_zip = make_zip({"junit.xml": "<testsuite tests='1'/>\n", "image.png": "not really png"})
+        self.extra_caches: list[dict] = []
 
     async def get_workflow(self, owner: str, repo: str, workflow_id: str) -> dict:
         return {"id": workflow_id, "path": f".github/workflows/{workflow_id}", "state": "active"}
@@ -164,7 +165,7 @@ class CIGitHubStub:
                 "created_at": "2026-05-29T00:00:00Z",
                 "last_accessed_at": "2026-05-30T00:00:00Z",
             }
-        ]
+        ] + self.extra_caches
         if key:
             caches = [item for item in caches if item["key"].startswith(key)]
         return {"total_count": len(caches), "actions_caches": caches}
@@ -211,7 +212,7 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     artifacts = asyncio.run(service.list_artifacts("acme", "demo", ListArtifactsRequest(run_id=77)))
     caches = asyncio.run(service.list_caches("acme", "demo", ListCachesRequest(key="ce-lib-")))
     dry_run = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101, dry_run=True)))
-    delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False)))
+    delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False, confirm=True)))
 
     assert dispatch.accepted is True
     assert dispatch.event == "workflow_dispatch"
@@ -252,7 +253,7 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
     service = make_service(github)
 
     default_dry_run = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101)))
-    missing = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=999, dry_run=False)))
+    missing = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=999, dry_run=False, confirm=True)))
 
     assert default_dry_run.dry_run is True
     assert default_dry_run.deleted is False
@@ -269,7 +270,14 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
     assert missing.selected_caches == []
     assert github.deleted_caches == []
 
-    direct_delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=202, dry_run=False)))
+    with pytest.raises(ApiError) as no_confirm:
+        asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=202, dry_run=False)))
+
+    assert no_confirm.value.error_code == ErrorCode.VALIDATION_ERROR
+    assert "confirm=true" in no_confirm.value.message
+    assert github.deleted_caches == []
+
+    direct_delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=202, dry_run=False, confirm=True)))
 
     assert direct_delete.deleted is True
     assert direct_delete.requested_count == 1
@@ -287,3 +295,56 @@ def test_delete_cache_rejects_short_or_broad_keys() -> None:
         asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="c")))
 
     assert exc.value.error_code == ErrorCode.VALIDATION_ERROR
+
+
+def test_delete_cache_actual_selector_requires_confirm_or_expected_metadata() -> None:
+    github = CIGitHubStub()
+    service = make_service(github)
+
+    with pytest.raises(ApiError) as no_confirm:
+        asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False)))
+
+    assert no_confirm.value.error_code == ErrorCode.VALIDATION_ERROR
+    assert "confirm=true" in no_confirm.value.message
+    assert github.deleted_caches == []
+
+    delete = asyncio.run(
+        service.delete_cache(
+            "acme",
+            "demo",
+            DeleteCacheRequest(
+                key="ce-lib-",
+                ref="refs/heads/gpt/fix",
+                dry_run=False,
+                expected_key="ce-lib-windows-x64",
+                expected_ref="refs/heads/gpt/fix",
+                expected_size_in_bytes=456,
+            ),
+        )
+    )
+
+    assert delete.deleted is True
+    assert github.deleted_caches == [101]
+
+
+def test_delete_cache_rejects_selector_matching_more_than_max_delete() -> None:
+    github = CIGitHubStub()
+    github.extra_caches = [
+        {
+            "id": 102,
+            "key": "ce-lib-linux-x64",
+            "ref": "refs/heads/gpt/fix",
+            "version": "v1",
+            "size_in_bytes": 789,
+            "created_at": "2026-05-29T00:00:00Z",
+            "last_accessed_at": "2026-05-30T00:00:00Z",
+        }
+    ]
+    service = make_service(github)
+
+    with pytest.raises(ApiError) as exc:
+        asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False, confirm=True, max_delete=1)))
+
+    assert exc.value.error_code == ErrorCode.VALIDATION_ERROR
+    assert "max_delete" in exc.value.message
+    assert github.deleted_caches == []

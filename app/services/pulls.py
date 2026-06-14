@@ -87,6 +87,14 @@ class PullRequestService:
             raise ApiError(ErrorCode.GITHUB_CONFLICT, "Draft pull requests cannot be merged.", status_code=409, details={"pr_number": request.pr_number})
         if info.mergeable is False:
             raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is not mergeable.", status_code=409, details={"pr_number": request.pr_number})
+        if request.expected_head_sha != info.head_sha:
+            raise ApiError(
+                ErrorCode.GITHUB_CONFLICT,
+                "Pull request head SHA does not match expected_head_sha.",
+                status_code=409,
+                suggestion="Re-read the pull request and retry with the current head_sha after review.",
+                details={"pr_number": request.pr_number, "expected_head_sha": request.expected_head_sha, "actual_head_sha": info.head_sha},
+            )
 
         merged = await self.github.merge_pull_request(
             owner,

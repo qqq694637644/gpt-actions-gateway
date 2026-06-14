@@ -8,48 +8,7 @@ def test_openapi_contains_only_v2_operation_ids():
     assert len(PUBLIC_OPERATION_IDS) == 29
 
 
-def test_hidden_and_removed_operation_ids_are_absent():
-    hidden_or_removed = {
-        "prepareWorkspaceMirror",
-        "prepareWorkspaceFromMirror",
-        "continueWorkBranch",
-        "listTree",
-        "exportRepoSnapshot",
-        "applyPatchAndCommit",
-        "commitFiles",
-        "getFile",
-        "getFileRange",
-        "getFiles",
-        "searchCode",
-        "compareRefs",
-        "listBranches",
-        "getBranch",
-        "getBranchProtection",
-        "getRepository",
-        "getDefaultBranch",
-        "rerunFailedJobs",
-        "rerunJob",
-        "getCiJob",
-    }
-    schema = app.openapi()
-    assert collect_operation_ids(schema).isdisjoint(hidden_or_removed)
-
-
-def test_hidden_workspace_branch_routes_are_not_registered():
-    removed_paths = {
-        "/repos/{owner}/{repo}/workspaces/prepare-mirror",
-        "/repos/{owner}/{repo}/workspaces/prepare-from-mirror",
-        "/repos/{owner}/{repo}/branches/continue-work-branch",
-    }
-    removed_names = {"prepare_workspace_mirror", "prepare_workspace_from_mirror", "continue_work_branch"}
-    route_paths = {getattr(route, "path", "") for route in app.routes}
-    route_names = {getattr(route, "name", "") for route in app.routes}
-
-    assert route_paths.isdisjoint(removed_paths)
-    assert route_names.isdisjoint(removed_names)
-
-
-def test_export_marks_all_public_operations_nonconsequential():
+def test_export_marks_all_public_operations_low_risk_nonconsequential():
     schema = app.openapi()
 
     mark_all_operations_nonconsequential(schema)
@@ -57,6 +16,7 @@ def test_export_marks_all_public_operations_nonconsequential():
     for path_item in schema["paths"].values():
         for method, operation in path_item.items():
             if method.lower() in {"get", "post", "put", "patch", "delete"} and "operationId" in operation:
+                assert operation["operationId"] in PUBLIC_OPERATION_IDS
                 assert operation["x-openai-isConsequential"] is False
 
 

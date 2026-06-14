@@ -41,7 +41,6 @@ PUBLIC_OPERATION_IDS = {
     "deleteCache",
 }
 
-
 def collect_operation_ids(schema: dict) -> set[str]:
     operation_ids: set[str] = set()
     for path_item in schema.get("paths", {}).values():

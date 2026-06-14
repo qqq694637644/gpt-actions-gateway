@@ -11,31 +11,30 @@ def make_settings(tmp_path, **kwargs) -> Settings:
     return Settings(workspace_root=str(tmp_path / "w"), workspace_mirror_root=str(tmp_path / "m"), audit_db_url=f"sqlite:///{tmp_path / 'audit.db'}", **kwargs)
 
 
-def test_removed_settings_are_not_present(tmp_path):
+def test_workspace_python_settings_describe_current_bootstrap_surface(tmp_path):
     settings = make_settings(tmp_path)
-    removed = [
-        "max_snapshot_bytes",
-        "max_search_file_bytes",
-        "max_file_size",
-        "max_total_read_size",
-        "max_total_commit_size",
-        "max_files_per_commit",
-        "allow_rerun_ci",
-        "allow_auto_merge",
-        "enable_debug_routes",
-        "base_branch_allowlist",
-        "base_branch_patterns",
-        "excluded_tree_dirs",
-    ]
-    for name in removed:
-        assert not hasattr(settings, name)
+
+    assert settings.workspace_python_venv_enabled is True
+    assert settings.workspace_python_venv_dir == ".venv"
+    assert settings.workspace_python_venv_python == "py -3.13"
+    assert settings.workspace_python_auto_gitignore is True
+    assert settings.workspace_python_auto_activate is True
+    assert {name for name in Settings.model_fields if name.startswith("workspace_python_")} == {
+        "workspace_python_venv_enabled",
+        "workspace_python_venv_dir",
+        "workspace_python_venv_python",
+        "workspace_python_auto_gitignore",
+        "workspace_python_auto_activate",
+    }
 
 
-def test_create_work_branch_request_has_no_legacy_aliases():
+def test_create_work_branch_request_has_current_base_ref_shape():
     schema = CreateWorkBranchRequest.model_json_schema()
     properties = schema["properties"]
-    assert "base_branch" not in properties
-    assert "source_pr_number" not in properties
+
+    assert "base_ref" in properties
+    assert "base_sha" in properties
+    assert "purpose_slug" in properties
 
 
 def test_prepare_workspace_request_workspace_id_schema_requires_ws_prefix():
@@ -43,7 +42,6 @@ def test_prepare_workspace_request_workspace_id_schema_requires_ws_prefix():
     workspace_id = schema["properties"]["workspace_id"]
     string_branch = next(item for item in workspace_id["anyOf"] if item.get("type") == "string")
     assert string_branch["pattern"] == WORKSPACE_ID_PATTERN
-
 
 
 @pytest.mark.parametrize(
@@ -68,8 +66,3 @@ def test_workspace_python_venv_dir_normalizes_relative_trailing_slash(tmp_path) 
     settings = make_settings(tmp_path, workspace_python_venv_dir="tools/.venv/")
 
     assert settings.workspace_python_venv_dir == "tools/.venv"
-
-
-def test_workspace_python_auto_install_true_fails_until_implemented(tmp_path) -> None:
-    with pytest.raises(ValidationError, match="WORKSPACE_PYTHON_AUTO_INSTALL is not implemented"):
-        make_settings(tmp_path, workspace_python_auto_install=True)

@@ -22,6 +22,7 @@ from app.models.workspaces import (
     WorkspaceApplyPatchRequest,
     WorkspaceCommitAndPushRequest,
     WorkspaceExecPwshRequest,
+    WorkspaceStatusRequest,
     WorkspaceWriteFileRequest,
 )
 from app.policy.rules import Policy
@@ -193,6 +194,26 @@ def test_exec_pwsh_does_not_collect_workspace_changes(tmp_path: Path, monkeypatc
     }
 
 
+def test_exec_pwsh_rejects_timeout_above_configured_safety_limit(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, _ = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_exec_timeout")))
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.exec_pwsh(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                WorkspaceExecPwshRequest(script="Write-Output ok", timeout_seconds=service.settings.workspace_max_timeout_seconds + 1),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.VALIDATION_ERROR
+    assert "safety limit" in exc.value.message
+    assert exc.value.suggestion is not None and "dispatch a workflow" in exc.value.suggestion
+
+
 def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
@@ -213,12 +234,16 @@ def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_p
     assert first.skipped is False
     assert first.target_dir == ".gpt-artifacts/runs/77"
     assert first.manifest_path == ".gpt-artifacts/runs/77/manifest.json"
+    assert first.gitignore_path == ".git/info/exclude"
     assert first.gitignore_updated is True
     assert first.artifacts[0].destination_dir == ".gpt-artifacts/runs/77/55-reports"
     assert (repo_dir / first.artifacts[0].destination_dir / "junit.xml").read_text(encoding="utf-8").startswith("<testsuite")
     assert json.loads((repo_dir / first.manifest_path).read_text(encoding="utf-8"))["remote_fingerprint"] == first.remote_fingerprint
-    assert ".gpt-artifacts/" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
+    assert ".gpt-artifacts/" in (repo_dir / ".git" / "info" / "exclude").read_text(encoding="utf-8")
     assert ".gpt-artifacts" not in git("status", "--porcelain=v1", "--untracked-files=all", cwd=repo_dir)
+    status = run(service.status("acme", "demo", prepared.workspace_id, WorkspaceStatusRequest()))
+    assert status.dirty is False
+    assert status.changed_files == []
     assert github.downloaded_artifacts == [55]
 
     github.artifact_size_in_bytes = len(github.artifact_zip) + 123
@@ -290,7 +315,11 @@ def test_sync_run_artifacts_to_workspace_requires_artifact_digest(tmp_path: Path
         )
 
     assert exc.value.error_code == ErrorCode.GITHUB_ERROR
-    assert "missing digest" in exc.value.message
+    assert exc.value.message == (
+        "GitHub artifact metadata did not include digest, so the gateway refused to sync it safely. "
+        "Use getRunLog/job logs instead, or enable an explicit unsafe artifact sync mode after review."
+    )
+    assert exc.value.details == {"missing_artifacts": [{"artifact_id": 55, "name": "reports"}]}
 
 
 def test_sync_run_artifacts_to_workspace_rejects_unsupported_digest_format(tmp_path: Path):
@@ -354,6 +383,42 @@ def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):
     assert response.previous_head_sha == prepared.head_sha
     assert response.new_head_sha != prepared.head_sha
     assert response.changed_files[0].path == "README.md"
+    assert git("rev-parse", "gpt/task", cwd=remote) == response.new_head_sha
+
+
+def test_workspace_commit_and_push_recovers_after_commit_succeeds_but_push_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_push_recovery")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    (repo_dir / "README.md").write_text("after\n", encoding="utf-8")
+    original_remote_head = git("rev-parse", "gpt/task", cwd=remote)
+    original_run = manager.git.run
+    failed = {"push": False}
+
+    async def flaky_run(args, *run_args, **run_kwargs):
+        if args and args[0] == "git" and "push" in args and not failed["push"]:
+            failed["push"] = True
+            return CommandResult(exit_code=1, stdout="", stderr="simulated push failure", duration_ms=1, truncated=False, timed_out=False)
+        return await original_run(args, *run_args, **run_kwargs)
+
+    monkeypatch.setattr(manager.git, "run", flaky_run)
+    request = WorkspaceCommitAndPushRequest(branch="gpt/task", expected_head_sha=prepared.head_sha, commit_message="Update README")
+
+    with pytest.raises(ApiError) as exc:
+        run(service.commit_and_push("acme", "demo", prepared.workspace_id, request))
+
+    assert exc.value.error_code == ErrorCode.WORKSPACE_PUSH_FAILED
+    assert git("rev-parse", "gpt/task", cwd=remote) == original_remote_head
+    assert git("rev-parse", "HEAD", cwd=repo_dir) != original_remote_head
+
+    response = run(service.commit_and_push("acme", "demo", prepared.workspace_id, request))
+
+    assert response.pushed is True
+    assert response.previous_head_sha == original_remote_head
+    assert response.commit_sha == response.new_head_sha
+    assert {item.path for item in response.changed_files} == {"README.md"}
     assert git("rev-parse", "gpt/task", cwd=remote) == response.new_head_sha
 
 
@@ -437,7 +502,7 @@ def test_workspace_prune_ignores_non_workspace_dirs_and_mirrors(tmp_path: Path):
     assert mirror_dir.exists()
 
 
-def test_prepare_work_branch_bootstraps_python_venv_and_gitignore(tmp_path: Path):
+def test_prepare_work_branch_bootstraps_python_venv_without_committable_diff(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
 
@@ -445,8 +510,11 @@ def test_prepare_work_branch_bootstraps_python_venv_and_gitignore(tmp_path: Path
     repo_dir = manager.repo_dir(prepared.workspace_id)
 
     assert (repo_dir / ".venv" / "pyvenv.cfg").exists()
-    assert ".venv/" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
+    assert ".venv/" in (repo_dir / ".git" / "info" / "exclude").read_text(encoding="utf-8")
     assert git("check-ignore", ".venv/pyvenv.cfg", cwd=repo_dir) == ".venv/pyvenv.cfg"
+    status = run(service.status("acme", "demo", prepared.workspace_id, WorkspaceStatusRequest()))
+    assert status.dirty is False
+    assert status.changed_files == []
 
 
 def test_prepare_base_ref_does_not_bootstrap_python_venv(tmp_path: Path):
@@ -460,36 +528,24 @@ def test_prepare_base_ref_does_not_bootstrap_python_venv(tmp_path: Path):
     assert not (repo_dir / ".gitignore").exists()
 
 
-def test_prepare_untracks_tracked_python_venv_and_keeps_local_files(tmp_path: Path):
+def test_prepare_python_venv_does_not_modify_tracked_gitignore_or_create_status_diff(tmp_path: Path):
     remote, source = make_local_repo(tmp_path)
-    subprocess.run([sys.executable, "-m", "venv", str(source / ".venv")], check=True, capture_output=True)
-    tracked = source / ".venv" / "tracked.txt"
-    tracked.write_text("tracked\n", encoding="utf-8")
-    venv_python = source / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    git("add", "-f", ".venv/pyvenv.cfg", str(venv_python.relative_to(source)).replace("\\", "/"), ".venv/tracked.txt", cwd=source)
-    git("commit", "-m", "Track accidental venv file", cwd=source)
+    (source / ".gitignore").write_text("dist/\n", encoding="utf-8")
+    git("add", ".gitignore", cwd=source)
+    git("commit", "-m", "Track gitignore", cwd=source)
     git("push", "origin", "gpt/task", cwd=source)
     service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
 
-    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_tracked_venv")))
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_python_no_diff")))
     repo_dir = manager.repo_dir(prepared.workspace_id)
 
-    assert git("ls-files", "--", ".venv", cwd=repo_dir) == ""
-    assert (repo_dir / ".venv" / "tracked.txt").exists()
-    assert ".venv/" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
-
-    response = run(
-        service.commit_and_push(
-            "acme",
-            "demo",
-            prepared.workspace_id,
-            WorkspaceCommitAndPushRequest(branch="gpt/task", expected_head_sha=prepared.head_sha, commit_message="Stop tracking local venv"),
-        )
-    )
-
-    assert response.pushed is True
-    assert ".venv/tracked.txt" in {item.path for item in response.changed_files}
-    assert ".gitignore" in {item.path for item in response.changed_files}
+    assert (repo_dir / ".gitignore").read_text(encoding="utf-8") == "dist/\n"
+    assert (repo_dir / ".venv" / "pyvenv.cfg").exists()
+    assert ".venv/" in (repo_dir / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    status = run(service.status("acme", "demo", prepared.workspace_id, WorkspaceStatusRequest()))
+    assert status.dirty is False
+    assert status.changed_files == []
+    assert git("status", "--porcelain=v1", "--untracked-files=all", cwd=repo_dir) == ""
 
 
 def test_prepare_existing_broken_python_venv_fails(tmp_path: Path):

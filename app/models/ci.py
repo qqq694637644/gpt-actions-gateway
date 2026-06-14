@@ -163,6 +163,10 @@ class DeleteCacheRequest(IdempotentRequest):
     key: str | None = Field(default=None, max_length=512)
     ref: str | None = Field(default=None, max_length=300)
     dry_run: bool = True
+    confirm: bool = False
+    expected_key: str | None = Field(default=None, max_length=512)
+    expected_ref: str | None = Field(default=None, max_length=300)
+    expected_size_in_bytes: int | None = Field(default=None, ge=0)
     max_delete: int = Field(default=1, ge=1, le=100)
 
     @model_validator(mode="after")

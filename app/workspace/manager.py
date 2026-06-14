@@ -240,8 +240,7 @@ class WorkspaceManager:
         venv_dir = self.settings.workspace_python_venv_dir
         venv_path = repo_dir / venv_dir
         if self.settings.workspace_python_auto_gitignore:
-            await self.untrack_python_venv(repo_dir)
-            self.ensure_python_venv_gitignore(repo_dir)
+            self.ensure_python_venv_local_exclude(repo_dir)
         if venv_path.exists():
             if not venv_path.is_dir():
                 raise ApiError(
@@ -309,20 +308,11 @@ class WorkspaceManager:
             )
         return python_path
 
-    async def untrack_python_venv(self, repo_dir: Path) -> None:
-        venv_dir = self.settings.workspace_python_venv_dir
-        tracked = await self.git.run(["git", "ls-files", "-z", "--", venv_dir], cwd=repo_dir)
-        if not tracked.stdout.strip("\0"):
-            return
-        await self.git.run(["git", "rm", "--cached", "-r", "--ignore-unmatch", "--", venv_dir], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
-
-    def ensure_python_venv_gitignore(self, repo_dir: Path) -> None:
+    def ensure_python_venv_local_exclude(self, repo_dir: Path) -> None:
         venv_entry = self.settings.workspace_python_venv_dir.rstrip("/") + "/"
-        gitignore = repo_dir / ".gitignore"
-        if gitignore.exists():
-            text = gitignore.read_text(encoding="utf-8", errors="replace")
-        else:
-            text = ""
+        exclude = repo_dir / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        text = exclude.read_text(encoding="utf-8", errors="replace") if exclude.exists() else ""
         if gitignore_contains_entry(text, venv_entry):
             return
         if text and not text.endswith("\n"):
@@ -330,7 +320,7 @@ class WorkspaceManager:
         if text.strip():
             text += "\n"
         text += "# Local Python virtual environment\n" + venv_entry + "\n"
-        gitignore.write_text(text, encoding="utf-8")
+        exclude.write_text(text, encoding="utf-8")
 
     async def _ensure_origin(self, owner: str, repo: str, repo_dir: Path) -> None:
         await self.git.run(["git", "remote", "set-url", "origin", self.github.git_remote_url(owner, repo)], cwd=repo_dir)
@@ -436,27 +426,23 @@ class WorkspaceManager:
 
     async def staged_changed_files(self, repo_dir: Path) -> list[ChangedFile]:
         result = await self.git.run(["git", "diff", "--cached", "--name-status", "-z"], cwd=repo_dir)
-        entries = [part for part in result.stdout.split("\0") if part]
-        changed: list[ChangedFile] = []
-        idx = 0
-        while idx < len(entries):
-            code = entries[idx]
-            idx += 1
-            if idx >= len(entries):
-                break
-            path = entries[idx]
-            previous_path = None
-            idx += 1
-            if code.startswith("R"):
-                previous_path = path
-                if idx >= len(entries):
-                    break
-                path = entries[idx]
-                idx += 1
-            operation = {"A": "added", "M": "modified", "D": "deleted"}.get(code[:1], "renamed" if code.startswith("R") else "modified")
-            changed.append(ChangedFile(path=path, operation=operation, status=code, previous_path=previous_path))
+        changed = _changed_files_from_name_status_z(result.stdout)
         stats = await self.diff_numstat(repo_dir, staged=True)
         return attach_numstat(changed, stats)
+
+    async def committed_changed_files_between(self, repo_dir: Path, base_ref: str, head_ref: str) -> list[ChangedFile]:
+        result = await self.git.run(["git", "diff", "--name-status", "-z", f"{base_ref}..{head_ref}"], cwd=repo_dir)
+        changed = _changed_files_from_name_status_z(result.stdout)
+        stats_result = await self.git.run(["git", "diff", "--numstat", f"{base_ref}..{head_ref}"], cwd=repo_dir, check=False, allowed_exit_codes=(0, 1))
+        return attach_numstat(changed, parse_numstat(stats_result.stdout))
+
+    async def diff_stat_between(self, repo_dir: Path, base_ref: str, head_ref: str) -> str:
+        result = await self.git.run(["git", "diff", "--stat", f"{base_ref}..{head_ref}"], cwd=repo_dir, check=False, allowed_exit_codes=(0, 1), max_output_bytes=20_000)
+        return result.stdout.strip()
+
+    async def is_ancestor(self, repo_dir: Path, ancestor_ref: str, descendant_ref: str) -> bool:
+        result = await self.git.run(["git", "merge-base", "--is-ancestor", ancestor_ref, descendant_ref], cwd=repo_dir, check=False, allowed_exit_codes=(0, 1))
+        return result.exit_code == 0
 
     async def changed_files_for_paths(self, repo_dir: Path, paths: list[str]) -> list[ChangedFile]:
         selectors = normalize_git_paths(paths)
@@ -589,6 +575,29 @@ def _path_is_selected(path: str, selectors: list[str]) -> bool:
     if "." in selectors:
         return True
     return any(path == selector or path.startswith(selector.rstrip("/") + "/") for selector in selectors)
+
+
+def _changed_files_from_name_status_z(raw: str) -> list[ChangedFile]:
+    entries = [part for part in raw.split("\0") if part]
+    changed: list[ChangedFile] = []
+    idx = 0
+    while idx < len(entries):
+        code = entries[idx]
+        idx += 1
+        if idx >= len(entries):
+            break
+        path = entries[idx]
+        previous_path = None
+        idx += 1
+        if code.startswith("R"):
+            previous_path = path
+            if idx >= len(entries):
+                break
+            path = entries[idx]
+            idx += 1
+        operation = {"A": "added", "M": "modified", "D": "deleted"}.get(code[:1], "renamed" if code.startswith("R") else "modified")
+        changed.append(ChangedFile(path=path, operation=operation, status=code, previous_path=previous_path))
+    return changed
 
 
 def _remove_tree(path: Path) -> None:

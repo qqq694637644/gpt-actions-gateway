@@ -102,7 +102,7 @@ class MergePullRequestRequest(GatewayBaseModel):
     commit_title: str | None = Field(default=None, min_length=1, max_length=200)
     commit_message: str | None = Field(default=None, max_length=20000)
     merge_method: Literal["merge", "squash", "rebase"] = "merge"
-    expected_head_sha: str | None = Field(default=None, min_length=7, max_length=40)
+    expected_head_sha: str = Field(min_length=7, max_length=40)
 
 
 class MergePullRequestResponse(GatewayBaseModel):
