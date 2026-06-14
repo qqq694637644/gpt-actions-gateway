@@ -27,14 +27,3 @@ class CreateWorkBranchResponse(GatewayBaseModel):
     created: bool
     continued: bool = False
     already_exists: bool = False
-    commit_url: str | None = None
-
-
-class ContinueWorkBranchRequest(GatewayBaseModel):
-    branch: str
-
-
-class ContinueWorkBranchResponse(GatewayBaseModel):
-    branch: str
-    head_sha: str
-    protected: bool = False

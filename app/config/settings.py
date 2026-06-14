@@ -98,7 +98,6 @@ class Settings(BaseSettings):
     audit_db_url: str = "sqlite:///./data/audit.db"
     request_timeout_seconds: float = 30.0
 
-    excluded_tree_dirs: str = "node_modules,dist,build,.git,vendor,.venv,venv,__pycache__,coverage,.next,.turbo"
 
     @field_validator(
         "max_log_bytes",
@@ -153,9 +152,6 @@ class Settings(BaseSettings):
     def read_branch_patterns(self) -> list[str]:
         return parse_csv(self.read_branch_allowlist)
 
-    @property
-    def excluded_dir_names(self) -> set[str]:
-        return set(parse_csv(self.excluded_tree_dirs))
 
 
 @lru_cache(maxsize=1)

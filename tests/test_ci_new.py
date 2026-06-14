@@ -39,6 +39,8 @@ class CIGitHubStub:
         self.rerun_runs: list[tuple[int, bool]] = []
         self.rerun_jobs: list[tuple[int, bool]] = []
         self.deleted_caches: list[int] = []
+        self.job_list_calls: list[tuple[int, int | None]] = []
+        self.cache_list_calls: list[dict | None] = []
         self.run_zip = make_zip({"job1/1_build.txt": "build ok\nwarning\n", "job2/test.log": "tests passed\n"})
         self.artifact_zip = make_zip({"junit.xml": "<testsuite tests='1'/>\n", "image.png": "not really png"})
 
@@ -62,6 +64,7 @@ class CIGitHubStub:
         }
 
     async def list_jobs_for_run(self, owner: str, repo: str, run_id: int, *, run_attempt: int | None = None) -> dict:
+        self.job_list_calls.append((run_id, run_attempt))
         return {
             "jobs": [
                 {
@@ -149,6 +152,7 @@ class CIGitHubStub:
         return self.artifact_zip
 
     async def list_actions_caches(self, owner: str, repo: str, *, params: dict | None = None) -> dict:
+        self.cache_list_calls.append(params)
         key = (params or {}).get("key")
         caches = [
             {
@@ -181,14 +185,18 @@ def test_ci_run_jobs_job_and_logs() -> None:
     service = make_service(github)
 
     run = asyncio.run(service.get_ci_run("acme", "demo", GetCiRunRequest(run_id=77)))
+    run_with_jobs = asyncio.run(service.get_ci_run("acme", "demo", GetCiRunRequest(run_id=77, include_jobs=True)))
     jobs = asyncio.run(service.get_ci_jobs("acme", "demo", GetCiJobsRequest(run_id=77, run_attempt=2)))
     job_log = asyncio.run(service.get_job_log("acme", "demo", GetJobLogRequest(job_id=10, step_name="pytest")))
     run_log = asyncio.run(service.get_run_log("acme", "demo", GetRunLogRequest(run_id=77, path_contains="job1")))
 
     assert run.run.run_id == 77
+    assert run.run.jobs is None
+    assert run_with_jobs.run.jobs is not None
+    assert run_with_jobs.run.jobs[0].name == "build"
     assert jobs.jobs[0].name == "build"
-    assert "FAILED test_example.py" in job_log.log
-    assert run_log.entries[0].name == "job1/1_build.txt"
+    assert "FAILED test_example.py" in job_log.log_excerpt
+    assert run_log.files[0].name == "job1/1_build.txt"
 
 
 def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
@@ -214,8 +222,13 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     assert artifacts.artifacts[0].name == "reports"
     assert artifacts.artifacts[0].digest == "sha256:reports"
     assert caches.caches[0].key == "ce-lib-windows-x64"
-    assert dry_run.deleted is False and dry_run.matched_count == 1
+    assert dry_run.deleted is False and dry_run.requested_count == 1
+    assert dry_run.selected_count == 0
+    assert dry_run.requested_caches[0].cache_id == 101
+    assert dry_run.selected_caches == []
     assert delete.deleted is True and github.deleted_caches == [101]
+    assert delete.selected_count == 1
+    assert delete.selected_caches[0].cache_id == 101
 
 
 def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
@@ -230,6 +243,8 @@ def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
     assert dispatch.query_hint["workflow_id"] == "ci.yml"
     assert status.matched_by == "workflow_id"
     assert status.conclusion == "success"
+    assert "jobs" not in status.workflow_runs[0].model_dump()
+    assert github.job_list_calls == []
 
 
 def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -> None:
@@ -241,15 +256,27 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
 
     assert default_dry_run.dry_run is True
     assert default_dry_run.deleted is False
+    assert default_dry_run.requested_count == 1
+    assert default_dry_run.selected_count == 0
+    assert default_dry_run.requested_caches[0].cache_id == 101
+    assert default_dry_run.selected_caches == []
+    assert default_dry_run.warning == "Dry run only; requested cache_id was not verified against GitHub. Use listCaches to inspect metadata before deleting."
+    assert github.cache_list_calls == []
     assert github.deleted_caches == []
-    assert missing.matched_count == 0
-    assert missing.deleted_caches == []
+    assert missing.requested_count == 1
+    assert missing.selected_count == 0
+    assert missing.requested_caches[0].cache_id == 999
+    assert missing.selected_caches == []
     assert github.deleted_caches == []
 
     direct_delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=202, dry_run=False)))
 
     assert direct_delete.deleted is True
-    assert direct_delete.deleted_caches[0].cache_id == 202
+    assert direct_delete.requested_count == 1
+    assert direct_delete.selected_count == 1
+    assert direct_delete.requested_caches[0].cache_id == 202
+    assert direct_delete.selected_caches[0].cache_id == 202
+    assert github.cache_list_calls == []
     assert github.deleted_caches == [202]
 
 

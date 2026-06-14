@@ -15,6 +15,7 @@ from app.models.ci import (
     Artifact,
     CIJob,
     CIRun,
+    CIRunSummary,
     CIStatusQueryRequest,
     CIStatusResponse,
     CIStep,
@@ -102,23 +103,19 @@ class CIService:
                 details={"commit_sha": target_sha, "branch": branch, "workflow_id": request.workflow_id, "event": request.event},
             )
 
-        runs: list[CIRun] = []
-        for raw_run in raw_runs[:20]:
-            jobs_payload = await self.github.list_jobs_for_run(owner, repo, raw_run["id"], run_attempt=raw_run.get("run_attempt"))
-            jobs = [self._job_from_github(job) for job in jobs_payload.get("jobs", [])]
-            runs.append(self._run_from_github(raw_run, jobs=jobs))
+        runs = [self._run_summary_from_github(raw_run) for raw_run in raw_runs[:20]]
         status, conclusion = self._aggregate(runs)
         return CIStatusResponse(matched_by=matched_by, status=status, conclusion=conclusion, workflow_runs=runs, warning=warning)
 
     async def get_ci_run(self, owner: str, repo: str, request: GetCiRunRequest) -> GetCiRunResponse:
         self.policy.assert_repo_allowed(owner, repo)
         raw_run = await self.github.get_workflow_run(owner, repo, request.run_id)
-        jobs: list[CIJob] = []
+        jobs: list[CIJob] | None = None
         if request.include_jobs:
             jobs_payload = await self.github.list_jobs_for_run(owner, repo, request.run_id, run_attempt=raw_run.get("run_attempt"))
             jobs = [self._job_from_github(job) for job in jobs_payload.get("jobs", [])]
         run = self._run_from_github(raw_run, jobs=jobs)
-        return GetCiRunResponse(workflow_run=run, run=run)
+        return GetCiRunResponse(run=run)
 
     async def get_ci_jobs(self, owner: str, repo: str, request: GetCiJobsRequest) -> GetCiJobsResponse:
         self.policy.assert_repo_allowed(owner, repo)
@@ -215,35 +212,36 @@ class CIService:
                 self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
             return response
 
-        matched = await self._match_caches_for_delete(owner, repo, request)
-        matched_count = len(matched)
-        if matched_count == 0:
-            response = DeleteCacheResponse(deleted=False, dry_run=request.dry_run, matched_count=0, deleted_count=0, deleted_caches=[], warning="No cache matched the selector.")
+        selected = await self._match_caches_for_delete(owner, repo, request)
+        selected_count = len(selected)
+        if selected_count == 0:
+            response = DeleteCacheResponse(deleted=False, dry_run=request.dry_run, requested_count=0, selected_count=0, deleted_count=0, warning="No cache matched the selector.")
             self._record_cache_delete_audit(owner, repo, request, response)
             if request.idempotency_key and self.audit:
                 self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
             return response
-        if matched_count > request.max_delete:
+        if selected_count > request.max_delete:
             raise ApiError(
                 ErrorCode.VALIDATION_ERROR,
                 "Cache selector matched more entries than max_delete allows.",
                 status_code=409,
                 suggestion="Use cache_id for a precise delete, add a ref filter, increase max_delete after review, or run dry_run first.",
-                details={"matched_count": matched_count, "max_delete": request.max_delete},
+                details={"selected_count": selected_count, "max_delete": request.max_delete},
             )
 
         deleted_count = 0
         if not request.dry_run:
-            for cache in matched:
+            for cache in selected:
                 await self.github.delete_actions_cache(owner, repo, cache.cache_id)
                 deleted_count += 1
         warning = "Dry run only; no cache was deleted." if request.dry_run else None
         response = DeleteCacheResponse(
             deleted=deleted_count > 0,
             dry_run=request.dry_run,
-            matched_count=matched_count,
+            requested_count=0,
+            selected_count=selected_count,
             deleted_count=deleted_count,
-            deleted_caches=matched,
+            selected_caches=selected,
             warning=warning,
         )
         self._record_cache_delete_audit(owner, repo, request, response)
@@ -294,7 +292,7 @@ class CIService:
             raw_log = _extract_step_log(raw_log, request.step_name)
         max_lines = min(request.max_lines or self.settings.max_log_lines, self.settings.max_log_lines)
         excerpt, last_lines, total_lines, truncated = _trim_log(raw_log, max_lines=max_lines, max_bytes=self.settings.max_log_bytes)
-        return JobLogResponse(job_id=request.job_id, step_name=request.step_name, log_excerpt=excerpt, log=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=truncated)
+        return JobLogResponse(job_id=request.job_id, step_name=request.step_name, log_excerpt=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=truncated)
 
     async def get_run_log(self, owner: str, repo: str, request: GetRunLogRequest) -> RunLogResponse:
         self.policy.assert_repo_allowed(owner, repo)
@@ -317,10 +315,10 @@ class CIService:
                         continue
                     text = raw.decode("utf-8", errors="replace")
                     excerpt, last_lines, total_lines, file_truncated = _trim_log(text, max_lines=max_lines, max_bytes=self.settings.max_log_bytes)
-                    files.append(RunLogFile(path=info.filename, name=info.filename, log_excerpt=excerpt, log=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=file_truncated))
+                    files.append(RunLogFile(path=info.filename, name=info.filename, log_excerpt=excerpt, last_lines=last_lines, total_lines=total_lines, truncated=file_truncated))
         except zipfile.BadZipFile as exc:
             raise ApiError(ErrorCode.CI_LOG_NOT_READY, "Workflow run log archive is not a valid zip file.", status_code=502) from exc
-        return RunLogResponse(run_id=request.run_id, files=files, entries=files, truncated=truncated)
+        return RunLogResponse(run_id=request.run_id, files=files, truncated=truncated)
 
     async def list_artifacts(self, owner: str, repo: str, request: ListArtifactsRequest) -> ListArtifactsResponse:
         self.policy.assert_repo_allowed(owner, repo)
@@ -410,15 +408,16 @@ class CIService:
         if cache_id is None:
             raise ApiError(ErrorCode.VALIDATION_ERROR, "cache_id is required for cache-id deletion.", status_code=422)
 
-        cache, lookup_warning = await self._find_cache_by_id(owner, repo, cache_id)
+        cache = ActionCache(cache_id=cache_id)
         if request.dry_run:
             return DeleteCacheResponse(
                 deleted=False,
                 dry_run=True,
-                matched_count=1 if cache else 0,
+                requested_count=1,
+                selected_count=0,
                 deleted_count=0,
-                deleted_caches=[cache] if cache else [],
-                warning=lookup_warning or "Dry run only; no cache was deleted.",
+                requested_caches=[cache],
+                warning="Dry run only; requested cache_id was not verified against GitHub. Use listCaches to inspect metadata before deleting.",
             )
 
         try:
@@ -428,9 +427,10 @@ class CIService:
                 return DeleteCacheResponse(
                     deleted=False,
                     dry_run=False,
-                    matched_count=0,
+                    requested_count=1,
+                    selected_count=0,
                     deleted_count=0,
-                    deleted_caches=[],
+                    requested_caches=[cache],
                     warning="GitHub reported that the cache_id was not found; no cache was deleted.",
                 )
             raise
@@ -438,26 +438,12 @@ class CIService:
         return DeleteCacheResponse(
             deleted=True,
             dry_run=False,
-            matched_count=1,
+            requested_count=1,
+            selected_count=1,
             deleted_count=1,
-            deleted_caches=[cache or ActionCache(cache_id=cache_id)],
-            warning=lookup_warning,
+            requested_caches=[cache],
+            selected_caches=[cache],
         )
-
-    async def _find_cache_by_id(self, owner: str, repo: str, cache_id: int) -> tuple[ActionCache | None, str | None]:
-        page = 1
-        scanned = 0
-        while True:
-            payload = await self.github.list_actions_caches(owner, repo, params={"per_page": 100, "page": page})
-            raw_items = payload.get("actions_caches", [])
-            for item in raw_items:
-                if int(item.get("id", 0)) == cache_id:
-                    return self._cache_from_github(item), None
-            scanned += len(raw_items)
-            total_count = int(payload.get("total_count") or scanned)
-            if not raw_items or scanned >= total_count:
-                return None, "Cache metadata was not found while enumerating Actions caches; actual deletion by cache_id still uses GitHub's exact DELETE endpoint."
-            page += 1
 
     @staticmethod
     def _validate_cache_delete_key(key: str) -> str:
@@ -484,7 +470,8 @@ class CIService:
                 "ref": request.ref,
                 "dry_run": request.dry_run,
                 "max_delete": request.max_delete,
-                "matched_count": response.matched_count,
+                "requested_count": response.requested_count,
+                "selected_count": response.selected_count,
                 "deleted_count": response.deleted_count,
             },
         )
@@ -562,8 +549,8 @@ class CIService:
         )
 
     @staticmethod
-    def _run_from_github(raw_run: dict[str, Any], *, jobs: list[CIJob] | None = None) -> CIRun:
-        return CIRun(
+    def _run_summary_from_github(raw_run: dict[str, Any]) -> CIRunSummary:
+        return CIRunSummary(
             run_id=raw_run["id"],
             run_attempt=raw_run.get("run_attempt"),
             workflow_id=raw_run.get("workflow_id"),
@@ -576,11 +563,14 @@ class CIService:
             run_url=raw_run.get("html_url"),
             created_at=raw_run.get("created_at"),
             updated_at=raw_run.get("updated_at"),
-            jobs=jobs or [],
         )
 
     @staticmethod
-    def _aggregate(runs: list[CIRun]) -> tuple[str, str | None]:
+    def _run_from_github(raw_run: dict[str, Any], *, jobs: list[CIJob] | None = None) -> CIRun:
+        return CIRun(**CIService._run_summary_from_github(raw_run).model_dump(), jobs=jobs)
+
+    @staticmethod
+    def _aggregate(runs: list[CIRunSummary]) -> tuple[str, str | None]:
         statuses = {run.status for run in runs}
         conclusions = [run.conclusion for run in runs if run.conclusion]
         if "queued" in statuses:

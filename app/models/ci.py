@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from app.models.common import ChangedFile, GatewayBaseModel, IdempotentRequest
+from app.models.common import GatewayBaseModel, IdempotentRequest
 
 
 class CIStep(GatewayBaseModel):
@@ -34,7 +34,7 @@ class CIJob(GatewayBaseModel):
     failed_steps: list[FailedStep] = Field(default_factory=list)
 
 
-class CIRun(GatewayBaseModel):
+class CIRunSummary(GatewayBaseModel):
     run_id: int
     run_attempt: int | None = None
     workflow_id: int | str | None = None
@@ -47,7 +47,10 @@ class CIRun(GatewayBaseModel):
     run_url: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
-    jobs: list[CIJob] = Field(default_factory=list)
+
+
+class CIRun(CIRunSummary):
+    jobs: list[CIJob] | None = None
 
 
 class CIStatusQueryRequest(GatewayBaseModel):
@@ -63,7 +66,7 @@ class CIStatusResponse(GatewayBaseModel):
     matched_by: str
     status: str
     conclusion: str | None = None
-    workflow_runs: list[CIRun]
+    workflow_runs: list[CIRunSummary]
     warning: str | None = None
 
 
@@ -73,7 +76,6 @@ class GetCiRunRequest(GatewayBaseModel):
 
 
 class GetCiRunResponse(GatewayBaseModel):
-    workflow_run: CIRun
     run: CIRun
 
 
@@ -173,9 +175,11 @@ class DeleteCacheRequest(IdempotentRequest):
 class DeleteCacheResponse(GatewayBaseModel):
     deleted: bool
     dry_run: bool
-    matched_count: int
+    requested_count: int
+    selected_count: int
     deleted_count: int
-    deleted_caches: list[ActionCache]
+    requested_caches: list[ActionCache] = Field(default_factory=list)
+    selected_caches: list[ActionCache] = Field(default_factory=list)
     warning: str | None = None
 
 
@@ -218,7 +222,6 @@ class JobLogResponse(GatewayBaseModel):
     job_id: int
     step_name: str | None = None
     log_excerpt: str
-    log: str
     last_lines: str
     total_lines: int
     truncated: bool = False
@@ -235,7 +238,6 @@ class RunLogFile(GatewayBaseModel):
     path: str
     name: str
     log_excerpt: str
-    log: str
     last_lines: str
     total_lines: int
     truncated: bool = False
@@ -244,7 +246,6 @@ class RunLogFile(GatewayBaseModel):
 class RunLogResponse(GatewayBaseModel):
     run_id: int
     files: list[RunLogFile]
-    entries: list[RunLogFile]
     truncated: bool = False
 
 
@@ -297,6 +298,4 @@ class SyncRunArtifactsToWorkspaceResponse(GatewayBaseModel):
     gitignore_updated: bool
     artifacts: list[SyncedRunArtifact]
     total_count: int
-    changed_files: list[ChangedFile] = Field(default_factory=list)
-    diff_stat: str = ""
     warning: str | None = None

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.github.client import GitHubClient
-from app.models.branches import ContinueWorkBranchRequest, ContinueWorkBranchResponse, CreateWorkBranchRequest, CreateWorkBranchResponse
+from app.models.branches import CreateWorkBranchRequest, CreateWorkBranchResponse
 from app.policy.rules import Policy, is_sha, sanitize_purpose_slug
 from app.storage.audit import AuditStore
 
@@ -51,13 +51,6 @@ class BranchService:
         if request.idempotency_key and self.audit:
             self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
         return response
-
-    async def continue_work_branch(self, owner: str, repo: str, request: ContinueWorkBranchRequest) -> ContinueWorkBranchResponse:
-        self.policy.assert_repo_allowed(owner, repo)
-        self.policy.assert_write_branch_allowed(request.branch)
-        branch = await self.github.get_branch(owner, repo, request.branch)
-        head_sha = ((branch.get("commit") or {}).get("sha")) or await self.github.get_branch_head(owner, repo, request.branch)
-        return ContinueWorkBranchResponse(branch=request.branch, head_sha=head_sha, protected=bool(branch.get("protected", False)))
 
     async def _resolve_base(self, owner: str, repo: str, request: CreateWorkBranchRequest) -> tuple[str, str]:
         if request.base_sha:

@@ -4,6 +4,7 @@ import hmac
 import time
 from collections import defaultdict, deque
 from threading import Lock
+from typing import Annotated
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -22,8 +23,8 @@ def _constant_time_member(candidate: str, valid_values: list[str]) -> bool:
 
 async def require_auth(
     request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    settings: Settings = Depends(get_settings),
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> str:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise ApiError(

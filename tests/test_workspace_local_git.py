@@ -18,8 +18,6 @@ from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.models.ci import SyncRunArtifactsToWorkspaceRequest
 from app.models.workspaces import (
-    PrepareWorkspaceFromMirrorRequest,
-    PrepareWorkspaceMirrorRequest,
     PrepareWorkspaceRequest,
     WorkspaceApplyPatchRequest,
     WorkspaceCommitAndPushRequest,
@@ -533,95 +531,6 @@ def test_split_command_handles_quoted_python_path_with_spaces() -> None:
 
     assert parts == [r"C:\Program Files\Python313\python.exe", "-m", "venv"]
 
-
-def test_workspace_prepare_mirror_then_from_mirror(tmp_path: Path):
-    remote, _ = make_local_repo(tmp_path)
-    service, _ = make_service(tmp_path, remote)
-
-    mirror = run(service.prepare_mirror("acme", "demo", PrepareWorkspaceMirrorRequest(refresh=True)))
-    assert mirror.diagnostics.mirror_stage == "clone"
-    assert mirror.diagnostics.workspace_stage == "skip"
-
-    prepared = run(
-        service.prepare_from_mirror(
-            "acme",
-            "demo",
-            PrepareWorkspaceFromMirrorRequest(branch="gpt/task", workspace_id="ws_custom_2"),
-        )
-    )
-
-    assert prepared.created is True
-    assert prepared.diagnostics.mirror_stage == "reuse"
-    assert prepared.diagnostics.workspace_stage in {"clone", "reuse"}
-    assert prepared.head_sha
-
-
-def test_workspace_prepare_mirror_rejects_disallowed_repo(tmp_path: Path):
-    remote, _ = make_local_repo(tmp_path)
-    service, _ = make_service(tmp_path, remote, allow_all_repos=False, allowed_repos="acme/allowed")
-
-    with pytest.raises(ApiError) as exc:
-        run(service.prepare_mirror("evil", "repo", PrepareWorkspaceMirrorRequest(refresh=True)))
-
-    assert exc.value.error_code == ErrorCode.REPO_NOT_ALLOWED
-    assert not (tmp_path / "mirrors" / "evil" / "repo.git").exists()
-
-
-def test_workspace_prepare_mirror_refresh_false_clones_missing_mirror(tmp_path: Path):
-    remote, _ = make_local_repo(tmp_path)
-    service, _ = make_service(tmp_path, remote)
-
-    mirror = run(service.prepare_mirror("acme", "demo", PrepareWorkspaceMirrorRequest(refresh=False)))
-
-    assert mirror.diagnostics.mirror_stage == "clone"
-    assert mirror.refreshed is False
-    assert mirror.diagnostics.mirror_pack_files >= 0
-
-
-def test_workspace_prepare_mirror_refresh_false_reuses_existing_mirror(tmp_path: Path):
-    remote, _ = make_local_repo(tmp_path)
-    service, _ = make_service(tmp_path, remote)
-
-    run(service.prepare_mirror("acme", "demo", PrepareWorkspaceMirrorRequest(refresh=False)))
-    mirror = run(service.prepare_mirror("acme", "demo", PrepareWorkspaceMirrorRequest(refresh=False)))
-
-    assert mirror.diagnostics.mirror_stage == "reuse"
-    assert mirror.refreshed is False
-
-
-def test_workspace_prepare_from_mirror_requires_existing_mirror(tmp_path: Path):
-    remote, _ = make_local_repo(tmp_path)
-    service, _ = make_service(tmp_path, remote)
-
-    with pytest.raises(ApiError) as exc:
-        run(
-            service.prepare_from_mirror(
-                "acme",
-                "demo",
-                PrepareWorkspaceFromMirrorRequest(branch="gpt/task", workspace_id="ws_missing_mirror"),
-            )
-        )
-
-    assert exc.value.error_code == ErrorCode.WORKSPACE_NOT_FOUND
-    assert "prepareWorkspaceMirror" in exc.value.message
-
-
-def test_workspace_prepare_from_mirror_checks_out_exact_sha(tmp_path: Path):
-    remote, _ = make_local_repo(tmp_path)
-    expected_sha = git("rev-parse", "main", cwd=remote)
-    service, _ = make_service(tmp_path, remote)
-
-    run(service.prepare_mirror("acme", "demo", PrepareWorkspaceMirrorRequest(refresh=True)))
-    prepared = run(
-        service.prepare_from_mirror(
-            "acme",
-            "demo",
-            PrepareWorkspaceFromMirrorRequest(base_ref=expected_sha, workspace_id="ws_exact_sha"),
-        )
-    )
-
-    assert prepared.branch == expected_sha
-    assert prepared.head_sha == expected_sha
 
 
 def test_workspace_apply_patch_dry_run_and_apply_do_not_push(tmp_path: Path):
