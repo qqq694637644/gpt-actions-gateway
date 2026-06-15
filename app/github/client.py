@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import logging
+import time
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -9,6 +11,8 @@ import httpx
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.github.auth import GitHubAuthProvider
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
@@ -73,9 +77,20 @@ class GitHubClient:
         request_headers = {"Authorization": f"Bearer {token}"}
         if headers:
             request_headers.update(headers)
+        started = time.perf_counter()
         try:
             response = await self._client.request(method, path, params=params, json=json, headers=request_headers, follow_redirects=follow_redirects)
         except httpx.TimeoutException as exc:
+            logger.warning(
+                "github_request.timeout method=%s path=%s raw_bytes=%s raw_text=%s follow_redirects=%s timeout_seconds=%s duration_ms=%.2f",
+                method,
+                path,
+                raw_bytes,
+                raw_text,
+                follow_redirects,
+                self.settings.request_timeout_seconds,
+                (time.perf_counter() - started) * 1000,
+            )
             raise ApiError(
                 ErrorCode.GITHUB_ERROR,
                 "GitHub API request timed out.",
@@ -84,6 +99,15 @@ class GitHubClient:
                 details={"method": method, "path": path},
             ) from exc
         except httpx.HTTPError as exc:
+            logger.exception(
+                "github_request.http_error method=%s path=%s raw_bytes=%s raw_text=%s follow_redirects=%s duration_ms=%.2f",
+                method,
+                path,
+                raw_bytes,
+                raw_text,
+                follow_redirects,
+                (time.perf_counter() - started) * 1000,
+            )
             raise ApiError(
                 ErrorCode.GITHUB_ERROR,
                 "GitHub API request failed before receiving a valid response.",
@@ -91,10 +115,32 @@ class GitHubClient:
                 suggestion="Check outbound network access, proxy configuration, and GitHub API reachability.",
                 details={"method": method, "path": path, "error": str(exc)},
             ) from exc
+        duration_ms = (time.perf_counter() - started) * 1000
         if response.status_code >= 400:
+            logger.warning(
+                "github_request.error_response method=%s path=%s status_code=%s content_length=%s raw_bytes=%s raw_text=%s follow_redirects=%s duration_ms=%.2f",
+                method,
+                path,
+                response.status_code,
+                response.headers.get("content-length"),
+                raw_bytes,
+                raw_text,
+                follow_redirects,
+                duration_ms,
+            )
             self._raise_for_github_error(response)
         if raw_bytes:
-            return response.content
+            data = response.content
+            logger.warning(
+                "github_request.raw_bytes_done method=%s path=%s status_code=%s bytes=%s content_length=%s duration_ms=%.2f",
+                method,
+                path,
+                response.status_code,
+                len(data),
+                response.headers.get("content-length"),
+                duration_ms,
+            )
+            return data
         if raw_text:
             return response.text
         if response.status_code == 204 or not response.content:
@@ -258,7 +304,39 @@ class GitHubClient:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts", params=params)
 
     async def download_artifact(self, owner: str, repo: str, artifact_id: int) -> bytes:
-        return await self._request("GET", f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip", follow_redirects=True, raw_bytes=True)
+        path = f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"
+        started = time.perf_counter()
+        logger.warning(
+            "github_artifact_download.start owner=%s repo=%s artifact_id=%s timeout_seconds=%s",
+            owner,
+            repo,
+            artifact_id,
+            self.settings.request_timeout_seconds,
+        )
+        try:
+            data = await self._request("GET", path, follow_redirects=True, raw_bytes=True)
+        except Exception:
+            logger.exception(
+                "github_artifact_download.error owner=%s repo=%s artifact_id=%s duration_ms=%.2f",
+                owner,
+                repo,
+                artifact_id,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
+        duration_ms = (time.perf_counter() - started) * 1000
+        mib = len(data) / (1024 * 1024)
+        seconds = max(duration_ms / 1000, 0.001)
+        logger.warning(
+            "github_artifact_download.done owner=%s repo=%s artifact_id=%s bytes=%s duration_ms=%.2f mib_per_second=%.2f",
+            owner,
+            repo,
+            artifact_id,
+            len(data),
+            duration_ms,
+            mib / seconds,
+        )
+        return data
 
     async def list_actions_caches(self, owner: str, repo: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/caches", params=params)
