@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from app.errors import ApiError, ErrorCode
 
 
 class WorkspaceMeta(BaseModel):
@@ -18,6 +20,7 @@ class WorkspaceMeta(BaseModel):
     default_branch: str
     head_sha: str
     source_pr_number: int | None = None
+    writable: bool
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -31,7 +34,24 @@ def meta_path(workspace_dir: Path) -> Path:
 
 
 def load_meta(workspace_dir: Path) -> WorkspaceMeta:
-    return WorkspaceMeta.model_validate_json(meta_path(workspace_dir).read_text(encoding="utf-8"))
+    path = meta_path(workspace_dir)
+    try:
+        return WorkspaceMeta.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValidationError as exc:
+        missing_fields = [".".join(str(part) for part in error.get("loc", ())) for error in exc.errors() if error.get("type") == "missing"]
+        if "writable" in missing_fields:
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Workspace metadata is missing required field 'writable'; recreate the workspace.",
+                status_code=409,
+                details={"workspace_dir": str(workspace_dir), "missing_fields": missing_fields},
+            ) from exc
+        raise ApiError(
+            ErrorCode.WORKSPACE_POLICY_VIOLATION,
+            "Workspace metadata is invalid; recreate the workspace.",
+            status_code=409,
+            details={"workspace_dir": str(workspace_dir), "validation_errors": exc.errors()},
+        ) from exc
 
 
 def save_meta(workspace_dir: Path, meta: WorkspaceMeta) -> None:

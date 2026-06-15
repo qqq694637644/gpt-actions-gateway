@@ -118,7 +118,9 @@ def make_local_repo(tmp_path: Path) -> tuple[Path, Path]:
     git("add", "README.md", cwd=source)
     git("commit", "-m", "Initial", cwd=source)
     git("checkout", "-b", "gpt/task", cwd=source)
-    git("push", "origin", "main", "gpt/task", cwd=source)
+    git("checkout", "-b", "feature/task", cwd=source)
+    git("push", "origin", "main", "gpt/task", "feature/task", cwd=source)
+    git("checkout", "gpt/task", cwd=source)
     return remote, source
 
 
@@ -386,6 +388,31 @@ def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):
     assert git("rev-parse", "gpt/task", cwd=remote) == response.new_head_sha
 
 
+def test_workspace_prepare_commit_and_push_allows_arbitrary_branch(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="feature/task")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    (repo_dir / "README.md").write_text("after feature\n", encoding="utf-8")
+
+    response = run(
+        service.commit_and_push(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            WorkspaceCommitAndPushRequest(branch="feature/task", expected_head_sha=prepared.head_sha, commit_message="Update feature branch"),
+        )
+    )
+
+    assert prepared.branch == "feature/task"
+    assert response.pushed is True
+    assert response.previous_head_sha == prepared.head_sha
+    assert response.new_head_sha != prepared.head_sha
+    assert response.changed_files[0].path == "README.md"
+    assert git("rev-parse", "feature/task", cwd=remote) == response.new_head_sha
+
+
 def test_workspace_commit_and_push_recovers_after_commit_succeeds_but_push_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
@@ -517,6 +544,20 @@ def test_prepare_work_branch_bootstraps_python_venv_without_committable_diff(tmp
     assert status.changed_files == []
 
 
+def test_prepare_arbitrary_branch_bootstraps_python_venv_without_prefix_check(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="feature/task", workspace_id="ws_python_feature")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+
+    assert prepared.branch == "feature/task"
+    assert (repo_dir / ".venv" / "pyvenv.cfg").exists()
+    status = run(service.status("acme", "demo", prepared.workspace_id, WorkspaceStatusRequest()))
+    assert status.dirty is False
+    assert status.changed_files == []
+
+
 def test_prepare_base_ref_does_not_bootstrap_python_venv(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
@@ -526,6 +567,55 @@ def test_prepare_base_ref_does_not_bootstrap_python_venv(tmp_path: Path):
 
     assert not (repo_dir / ".venv").exists()
     assert not (repo_dir / ".gitignore").exists()
+
+
+def test_prepare_arbitrary_base_ref_is_read_only_and_does_not_bootstrap_python_venv(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(base_ref="feature/task", workspace_id="ws_read_only_feature")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    (repo_dir / "README.md").write_text("read-only change\n", encoding="utf-8")
+
+    assert prepared.branch == "feature/task"
+    assert not (repo_dir / ".venv").exists()
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.commit_and_push(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                WorkspaceCommitAndPushRequest(branch="feature/task", expected_head_sha=prepared.head_sha, commit_message="Should not publish"),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.WORKSPACE_POLICY_VIOLATION
+    assert "read-only base_ref workspace" in exc.value.message
+
+
+def test_legacy_workspace_meta_missing_writable_is_rejected(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(base_ref="feature/task", workspace_id="ws_legacy_meta")))
+    meta_file = manager.workspace_dir(prepared.workspace_id) / "meta.json"
+    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert meta.pop("writable") is False
+    meta_file.write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.commit_and_push(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                WorkspaceCommitAndPushRequest(branch="feature/task", expected_head_sha=prepared.head_sha, commit_message="Should not publish"),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.WORKSPACE_POLICY_VIOLATION
+    assert "missing required field 'writable'" in exc.value.message
 
 
 def test_prepare_python_venv_does_not_modify_tracked_gitignore_or_create_status_diff(tmp_path: Path):

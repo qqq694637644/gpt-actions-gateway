@@ -111,7 +111,7 @@ class WorkspaceService:
                 plain_output=request.plain_output,
                 utf8_output=request.utf8_output,
                 activate_python_venv=self.settings.workspace_python_auto_activate
-                and self.manager.should_use_python_venv(meta.branch, source_pr_number=meta.source_pr_number),
+                and self.manager.should_use_python_venv(writable=meta.writable),
                 python_venv_dir=self.settings.workspace_python_venv_dir,
             )
         self._audit(
@@ -302,6 +302,13 @@ class WorkspaceService:
 
     async def commit_and_push(self, owner: str, repo: str, workspace_id: str, request: WorkspaceCommitAndPushRequest) -> WorkspaceCommitAndPushResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)
+        if not meta.writable:
+            raise ApiError(
+                ErrorCode.WORKSPACE_POLICY_VIOLATION,
+                "Cannot commit and push from a read-only base_ref workspace.",
+                status_code=403,
+                details={"workspace_id": workspace_id, "branch": meta.branch},
+            )
         self.policy.assert_write_branch_allowed(request.branch)
         if request.branch != meta.branch:
             raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Commit branch must match prepared workspace branch.", status_code=403, details={"workspace_branch": meta.branch, "request_branch": request.branch})

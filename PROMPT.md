@@ -43,7 +43,7 @@ Workspace 状态只通过 `workspaceStatus` 获取；不要假设 `prepareWorksp
 
 ## Hard constraints
 
-- 先创建或使用 `gpt/*` 工作分支；不要直接修改 `main`, `master`, `develop`, `release/*`, `production/*`, `hotfix/*`。
+- 先创建或使用任务分支；默认生成 `gpt/*` 分支，但用户明确指定时可使用任意分支。
 - 调用 `prepareWorkspace` 时必须提供 `branch`、`source_pr_number` 或 `base_ref` 之一；不要只传 `workspace_id`。
 - `workspace_id` 必须使用 `ws_` 前缀，例如 `ws_repofix`、`ws_pr123_review`。
 - 小范围文本修改优先用 `workspaceApplyPatch`；完整 UTF-8 文本文件替换用 `workspaceWriteFile`。
@@ -78,7 +78,7 @@ Get-Content path/to/file -TotalCount 200
 
 Read-only investigation: `prepareWorkspace(base_ref=<ref>, workspace_id="ws_<task>")`，检查 `workspaceStatus`，再用 `workspaceExecPwsh` 阅读结构、搜索、读取相关文件。
 
-New maintenance task: `createWorkBranch`，`prepareWorkspace(branch=<branch>)`，读取上下文，修改，验证，`workspaceDiff`，`workspaceCommitAndPush`，`createPullRequest`，最后 `queryCiStatus`。
+New maintenance task: `createWorkBranch` 或使用用户指定分支，`prepareWorkspace(branch=<branch>)`，读取上下文，修改，验证，`workspaceDiff`，`workspaceCommitAndPush`，`createPullRequest`，最后 `queryCiStatus`。
 
 Continue an existing PR: `getPullRequest`，`prepareWorkspace(source_pr_number=<pr>)`，确认 workspace 状态，定位、修改、验证、diff，提交到 PR head branch，再查 CI。
 

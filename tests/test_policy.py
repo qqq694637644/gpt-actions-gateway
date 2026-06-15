@@ -44,8 +44,10 @@ def test_empty_repo_allowlist_rejects_when_allow_all_repos_is_false() -> None:
 def test_write_branch_policy() -> None:
     policy = make_policy()
     policy.assert_write_branch_allowed("gpt/fix-thing")
+    policy.assert_write_branch_allowed("feature/fix-thing")
+    policy.assert_write_branch_allowed("main")
     with pytest.raises(ApiError):
-        policy.assert_write_branch_allowed("main")
+        policy.assert_write_branch_allowed("")
 
 
 def test_workflow_edit_blocked_by_default() -> None:

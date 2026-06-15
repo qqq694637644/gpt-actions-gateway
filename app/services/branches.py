@@ -20,7 +20,7 @@ class BranchService:
 
     async def create_work_branch(self, owner: str, repo: str, request: CreateWorkBranchRequest) -> CreateWorkBranchResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        if request.branch:
+        if request.branch is not None:
             self.policy.assert_write_branch_allowed(request.branch)
         scope = f"{owner}/{repo}:create_work_branch"
         payload = request.model_dump()
@@ -30,7 +30,7 @@ class BranchService:
                 return CreateWorkBranchResponse(**cached)
 
         base_ref, base_sha = await self._resolve_base(owner, repo, request)
-        branch = request.branch or self._generate_branch_name(request.purpose_slug)
+        branch = request.branch if request.branch is not None else self._generate_branch_name(request.purpose_slug)
         self.policy.assert_write_branch_allowed(branch)
         try:
             await self.github.create_ref(owner, repo, branch, base_sha)

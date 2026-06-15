@@ -221,7 +221,7 @@ async def workspace_reset(
     return await WorkspaceService(github, pol, settings, manager, audit).reset(owner, repo, workspace_id, request)
 
 
-@router.post("/branches/create-work-branch", operation_id="createWorkBranch", summary="Create or continue a gpt/* work branch", response_model=CreateWorkBranchResponse)
+@router.post("/branches/create-work-branch", operation_id="createWorkBranch", summary="Create or continue a work branch", response_model=CreateWorkBranchResponse)
 async def create_work_branch(
     owner: str,
     repo: str,

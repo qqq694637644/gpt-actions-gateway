@@ -139,19 +139,8 @@ class Policy:
             )
 
     def assert_write_branch_allowed(self, branch: str) -> None:
-        forbidden_exact = {"main", "master", "develop"}
-        forbidden_prefixes = ("release/", "production/", "hotfix/")
-        if branch in forbidden_exact or branch.startswith(forbidden_prefixes):
-            raise ApiError(ErrorCode.BRANCH_NOT_ALLOWED, f"Branch {branch!r} is forbidden for writes.", status_code=403)
-        prefix = self.settings.write_branch_prefix
-        if branch == prefix.rstrip("/") or not branch.startswith(prefix):
-            raise ApiError(
-                ErrorCode.BRANCH_NOT_ALLOWED,
-                "Writes are only allowed to GPT work branches.",
-                status_code=403,
-                suggestion=f"Create or use a branch whose name starts with {prefix!r}.",
-                details={"branch": branch, "required_prefix": prefix},
-            )
+        if not branch or not branch.strip():
+            raise ApiError(ErrorCode.BRANCH_NOT_ALLOWED, "Branch name must be non-empty.", status_code=400)
 
     def assert_workspace_path_allowed(self, path: str) -> str:
         return normalize_path(path)

@@ -28,6 +28,13 @@ def test_workspace_python_settings_describe_current_bootstrap_surface(tmp_path):
     }
 
 
+def test_default_read_branch_allowlist_allows_all_refs(tmp_path):
+    settings = make_settings(tmp_path)
+
+    assert settings.read_branch_allowlist == "*"
+    assert settings.read_branch_patterns == ["*"]
+
+
 def test_create_work_branch_request_has_current_base_ref_shape():
     schema = CreateWorkBranchRequest.model_json_schema()
     properties = schema["properties"]
