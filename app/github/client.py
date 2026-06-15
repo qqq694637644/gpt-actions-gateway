@@ -14,6 +14,9 @@ from app.github.auth import GitHubAuthProvider
 
 logger = logging.getLogger(__name__)
 
+_ARTIFACT_DOWNLOAD_PROGRESS_BYTES = 10 * 1024 * 1024
+_ARTIFACT_DOWNLOAD_PROGRESS_SECONDS = 10.0
+
 
 class GitHubClient:
     def __init__(self, settings: Settings) -> None:
@@ -307,14 +310,16 @@ class GitHubClient:
         path = f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"
         started = time.perf_counter()
         logger.warning(
-            "github_artifact_download.start owner=%s repo=%s artifact_id=%s timeout_seconds=%s",
+            "github_artifact_download.start owner=%s repo=%s artifact_id=%s api_path=%s timeout_seconds=%s",
             owner,
             repo,
             artifact_id,
+            path,
             self.settings.request_timeout_seconds,
         )
         try:
-            data = await self._request("GET", path, follow_redirects=True, raw_bytes=True)
+            redirect_url = await self._resolve_artifact_download_url(owner, repo, artifact_id, path)
+            data = await self._download_artifact_redirect_url(owner, repo, artifact_id, redirect_url, started)
         except Exception:
             logger.exception(
                 "github_artifact_download.error owner=%s repo=%s artifact_id=%s duration_ms=%.2f",
@@ -337,6 +342,189 @@ class GitHubClient:
             mib / seconds,
         )
         return data
+
+    async def _resolve_artifact_download_url(self, owner: str, repo: str, artifact_id: int, path: str) -> str:
+        token = await self.get_api_token()
+        started = time.perf_counter()
+        try:
+            response = await self._client.request(
+                "GET",
+                path,
+                headers={"Authorization": f"Bearer {token}"},
+                follow_redirects=False,
+            )
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "github_artifact_download.redirect_timeout owner=%s repo=%s artifact_id=%s path=%s timeout_seconds=%s duration_ms=%.2f",
+                owner,
+                repo,
+                artifact_id,
+                path,
+                self.settings.request_timeout_seconds,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise ApiError(
+                ErrorCode.GITHUB_ERROR,
+                "GitHub artifact download redirect request timed out.",
+                status_code=502,
+                suggestion="Check outbound network access to GitHub, or increase REQUEST_TIMEOUT_SECONDS if the network is slow.",
+                details={"method": "GET", "path": path, "artifact_id": artifact_id},
+            ) from exc
+        except httpx.HTTPError as exc:
+            logger.exception(
+                "github_artifact_download.redirect_http_error owner=%s repo=%s artifact_id=%s path=%s duration_ms=%.2f",
+                owner,
+                repo,
+                artifact_id,
+                path,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise ApiError(
+                ErrorCode.GITHUB_ERROR,
+                "GitHub artifact download redirect request failed before receiving a valid response.",
+                status_code=502,
+                suggestion="Check outbound network access, proxy configuration, and GitHub API reachability.",
+                details={"method": "GET", "path": path, "artifact_id": artifact_id, "error": str(exc)},
+            ) from exc
+
+        duration_ms = (time.perf_counter() - started) * 1000
+        if response.status_code >= 400:
+            logger.warning(
+                "github_artifact_download.redirect_error_response owner=%s repo=%s artifact_id=%s path=%s status_code=%s content_length=%s duration_ms=%.2f",
+                owner,
+                repo,
+                artifact_id,
+                path,
+                response.status_code,
+                response.headers.get("content-length"),
+                duration_ms,
+            )
+            self._raise_for_github_error(response)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            raise ApiError(
+                ErrorCode.GITHUB_ERROR,
+                "GitHub artifact download endpoint did not return a redirect.",
+                status_code=502,
+                details={"artifact_id": artifact_id, "status_code": response.status_code, "path": path},
+            )
+        redirect_url = response.headers.get("location")
+        if not redirect_url:
+            raise ApiError(
+                ErrorCode.GITHUB_ERROR,
+                "GitHub artifact download redirect did not include a Location header.",
+                status_code=502,
+                details={"artifact_id": artifact_id, "status_code": response.status_code, "path": path},
+            )
+        parsed = urlparse(redirect_url)
+        logger.warning(
+            "github_artifact_download.redirect_resolved owner=%s repo=%s artifact_id=%s status_code=%s redirect_host=%s redirect_scheme=%s duration_ms=%.2f",
+            owner,
+            repo,
+            artifact_id,
+            response.status_code,
+            parsed.netloc,
+            parsed.scheme,
+            duration_ms,
+        )
+        return redirect_url
+
+    async def _download_artifact_redirect_url(self, owner: str, repo: str, artifact_id: int, redirect_url: str, started: float) -> bytes:
+        parsed = urlparse(redirect_url)
+        data = bytearray()
+        last_progress_time = time.perf_counter()
+        last_progress_bytes = 0
+        timeout = httpx.Timeout(self.settings.request_timeout_seconds)
+        headers = {"Accept": "application/octet-stream", "User-Agent": "gpt-actions-gateway-v2/2.0"}
+        logger.warning(
+            "github_artifact_download.stream_start owner=%s repo=%s artifact_id=%s redirect_host=%s timeout_seconds=%s",
+            owner,
+            repo,
+            artifact_id,
+            parsed.netloc,
+            self.settings.request_timeout_seconds,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=self.settings.github_use_env_proxy, follow_redirects=True, headers=headers) as client:
+                async with client.stream("GET", redirect_url) as response:
+                    content_length = response.headers.get("content-length")
+                    logger.warning(
+                        "github_artifact_download.stream_response owner=%s repo=%s artifact_id=%s status_code=%s content_length=%s final_url_host=%s",
+                        owner,
+                        repo,
+                        artifact_id,
+                        response.status_code,
+                        content_length,
+                        response.url.host,
+                    )
+                    if response.status_code >= 400:
+                        body = (await response.aread())[:4000]
+                        logger.warning(
+                            "github_artifact_download.stream_error_response owner=%s repo=%s artifact_id=%s status_code=%s body=%s",
+                            owner,
+                            repo,
+                            artifact_id,
+                            response.status_code,
+                            body.decode("utf-8", errors="replace"),
+                        )
+                        raise ApiError(
+                            ErrorCode.GITHUB_ERROR,
+                            "Artifact storage download request failed.",
+                            status_code=502,
+                            details={"artifact_id": artifact_id, "storage_status": response.status_code, "body": body.decode("utf-8", errors="replace")},
+                        )
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        data.extend(chunk)
+                        now = time.perf_counter()
+                        if len(data) - last_progress_bytes >= _ARTIFACT_DOWNLOAD_PROGRESS_BYTES or now - last_progress_time >= _ARTIFACT_DOWNLOAD_PROGRESS_SECONDS:
+                            elapsed_seconds = max(now - started, 0.001)
+                            logger.warning(
+                                "github_artifact_download.progress owner=%s repo=%s artifact_id=%s bytes=%s content_length=%s duration_ms=%.2f mib_per_second=%.2f",
+                                owner,
+                                repo,
+                                artifact_id,
+                                len(data),
+                                content_length,
+                                elapsed_seconds * 1000,
+                                (len(data) / (1024 * 1024)) / elapsed_seconds,
+                            )
+                            last_progress_bytes = len(data)
+                            last_progress_time = now
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "github_artifact_download.stream_timeout owner=%s repo=%s artifact_id=%s bytes=%s timeout_seconds=%s duration_ms=%.2f",
+                owner,
+                repo,
+                artifact_id,
+                len(data),
+                self.settings.request_timeout_seconds,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise ApiError(
+                ErrorCode.GITHUB_ERROR,
+                "Artifact storage download timed out.",
+                status_code=502,
+                suggestion="Check artifact storage download bandwidth or increase REQUEST_TIMEOUT_SECONDS if the storage path is slow.",
+                details={"artifact_id": artifact_id, "downloaded_bytes": len(data)},
+            ) from exc
+        except httpx.HTTPError as exc:
+            logger.exception(
+                "github_artifact_download.stream_http_error owner=%s repo=%s artifact_id=%s bytes=%s duration_ms=%.2f",
+                owner,
+                repo,
+                artifact_id,
+                len(data),
+                (time.perf_counter() - started) * 1000,
+            )
+            raise ApiError(
+                ErrorCode.GITHUB_ERROR,
+                "Artifact storage download failed before receiving a complete response.",
+                status_code=502,
+                suggestion="Check outbound network access, proxy configuration, and GitHub artifact storage reachability.",
+                details={"artifact_id": artifact_id, "downloaded_bytes": len(data), "error": str(exc)},
+            ) from exc
+        return bytes(data)
 
     async def list_actions_caches(self, owner: str, repo: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("GET", f"/repos/{owner}/{repo}/actions/caches", params=params)

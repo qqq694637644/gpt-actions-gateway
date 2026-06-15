@@ -562,8 +562,13 @@ class WorkspaceService:
         manifest_path_rel = _relative_repo_path(repo_dir, manifest_path)
         gitignore_path_rel = ".git/info/exclude"
 
+        artifacts: list[SyncedRunArtifact] = []
+        archive_payloads: list[tuple[dict[str, Any], bytes, float]] = []
+        gitignore_updated = False
+        skipped = False
+
         logger.warning(
-            "artifact_sync.lock_attempt owner=%s repo=%s workspace_id=%s run_id=%s target_dir=%s elapsed_ms=%.2f",
+            "artifact_sync.lock_attempt owner=%s repo=%s workspace_id=%s run_id=%s phase=precheck target_dir=%s elapsed_ms=%.2f",
             owner,
             repo,
             workspace_id,
@@ -573,7 +578,7 @@ class WorkspaceService:
         )
         with self.manager.lock(workspace_id):
             logger.warning(
-                "artifact_sync.lock_acquired owner=%s repo=%s workspace_id=%s run_id=%s target_dir=%s elapsed_ms=%.2f",
+                "artifact_sync.lock_acquired owner=%s repo=%s workspace_id=%s run_id=%s phase=precheck target_dir=%s elapsed_ms=%.2f",
                 owner,
                 repo,
                 workspace_id,
@@ -596,26 +601,42 @@ class WorkspaceService:
                     target_dir_rel,
                     remote_fingerprint,
                 )
-            else:
-                _remove_existing_artifact_target(target_dir)
-                target_dir.mkdir(parents=True, exist_ok=True)
-                artifacts = []
+
+        if not skipped:
+            logger.warning(
+                "artifact_sync.download_plan owner=%s repo=%s workspace_id=%s run_id=%s artifact_count=%s target_dir=%s lock_held=%s",
+                owner,
+                repo,
+                workspace_id,
+                request.run_id,
+                len(remote_artifacts),
+                target_dir_rel,
+                False,
+            )
+            for item in remote_artifacts:
+                artifact_id = int(item["artifact_id"])
+                name = str(item["name"])
+                destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
+                artifact_started = time.perf_counter()
                 logger.warning(
-                    "artifact_sync.download_plan owner=%s repo=%s workspace_id=%s run_id=%s artifact_count=%s target_dir=%s",
+                    "artifact_sync.artifact_start owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s size_in_bytes=%s digest=%s destination_dir=%s lock_held=%s",
                     owner,
                     repo,
                     workspace_id,
                     request.run_id,
-                    len(remote_artifacts),
-                    target_dir_rel,
+                    artifact_id,
+                    name,
+                    item.get("size_in_bytes"),
+                    item.get("digest"),
+                    _relative_repo_path(repo_dir, destination),
+                    False,
                 )
-                for item in remote_artifacts:
-                    artifact_id = int(item["artifact_id"])
-                    name = str(item["name"])
-                    destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
-                    artifact_started = time.perf_counter()
-                    logger.warning(
-                        "artifact_sync.artifact_start owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s size_in_bytes=%s digest=%s destination_dir=%s",
+                download_started = time.perf_counter()
+                try:
+                    archive_data = await self.github.download_artifact(owner, repo, artifact_id)
+                except Exception:
+                    logger.exception(
+                        "artifact_sync.artifact_download_error owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s size_in_bytes=%s duration_ms=%.2f",
                         owner,
                         repo,
                         workspace_id,
@@ -623,130 +644,157 @@ class WorkspaceService:
                         artifact_id,
                         name,
                         item.get("size_in_bytes"),
+                        (time.perf_counter() - download_started) * 1000,
+                    )
+                    raise
+                download_ms = (time.perf_counter() - download_started) * 1000
+                logger.warning(
+                    "artifact_sync.artifact_downloaded owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s metadata_size_in_bytes=%s archive_bytes=%s duration_ms=%.2f mib_per_second=%.2f",
+                    owner,
+                    repo,
+                    workspace_id,
+                    request.run_id,
+                    artifact_id,
+                    name,
+                    item.get("size_in_bytes"),
+                    len(archive_data),
+                    download_ms,
+                    (len(archive_data) / (1024 * 1024)) / max(download_ms / 1000, 0.001),
+                )
+                try:
+                    _verify_artifact_digest(archive_data, str(item["digest"]))
+                except Exception:
+                    logger.exception(
+                        "artifact_sync.artifact_digest_error owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s archive_bytes=%s expected_digest=%s",
+                        owner,
+                        repo,
+                        workspace_id,
+                        request.run_id,
+                        artifact_id,
+                        name,
+                        len(archive_data),
                         item.get("digest"),
-                        _relative_repo_path(repo_dir, destination),
                     )
-                    download_started = time.perf_counter()
-                    try:
-                        archive_data = await self.github.download_artifact(owner, repo, artifact_id)
-                    except Exception:
-                        logger.exception(
-                            "artifact_sync.artifact_download_error owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s size_in_bytes=%s duration_ms=%.2f",
-                            owner,
-                            repo,
-                            workspace_id,
-                            request.run_id,
-                            artifact_id,
-                            name,
-                            item.get("size_in_bytes"),
-                            (time.perf_counter() - download_started) * 1000,
-                        )
-                        raise
-                    download_ms = (time.perf_counter() - download_started) * 1000
-                    logger.warning(
-                        "artifact_sync.artifact_downloaded owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s metadata_size_in_bytes=%s archive_bytes=%s duration_ms=%.2f mib_per_second=%.2f",
-                        owner,
-                        repo,
-                        workspace_id,
-                        request.run_id,
-                        artifact_id,
-                        name,
-                        item.get("size_in_bytes"),
-                        len(archive_data),
-                        download_ms,
-                        (len(archive_data) / (1024 * 1024)) / max(download_ms / 1000, 0.001),
-                    )
-                    try:
-                        _verify_artifact_digest(archive_data, str(item["digest"]))
-                    except Exception:
-                        logger.exception(
-                            "artifact_sync.artifact_digest_error owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s archive_bytes=%s expected_digest=%s",
-                            owner,
-                            repo,
-                            workspace_id,
-                            request.run_id,
-                            artifact_id,
-                            name,
-                            len(archive_data),
-                            item.get("digest"),
-                        )
-                        raise
-                    logger.warning(
-                        "artifact_sync.artifact_digest_ok owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s archive_bytes=%s",
-                        owner,
-                        repo,
-                        workspace_id,
-                        request.run_id,
-                        artifact_id,
-                        name,
-                        len(archive_data),
-                    )
-                    extract_started = time.perf_counter()
-                    try:
-                        file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
-                    except Exception:
-                        logger.exception(
-                            "artifact_sync.artifact_extract_error owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s archive_bytes=%s destination_dir=%s duration_ms=%.2f",
-                            owner,
-                            repo,
-                            workspace_id,
-                            request.run_id,
-                            artifact_id,
-                            name,
-                            len(archive_data),
-                            _relative_repo_path(repo_dir, destination),
-                            (time.perf_counter() - extract_started) * 1000,
-                        )
-                        raise
-                    logger.warning(
-                        "artifact_sync.artifact_extracted owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s file_count=%s bytes_written=%s duration_ms=%.2f total_artifact_ms=%.2f",
-                        owner,
-                        repo,
-                        workspace_id,
-                        request.run_id,
-                        artifact_id,
-                        name,
-                        file_count,
-                        bytes_written,
-                        (time.perf_counter() - extract_started) * 1000,
-                        (time.perf_counter() - artifact_started) * 1000,
-                    )
-                    artifacts.append(
-                        SyncedRunArtifact(
-                            artifact_id=artifact_id,
-                            name=name,
-                            digest=str(item["digest"]),
-                            destination_dir=_relative_repo_path(repo_dir, destination),
-                            file_count=file_count,
-                            bytes_written=bytes_written,
-                        )
-                    )
-                _write_artifact_manifest(
-                    manifest_path,
-                    {
-                        "run_id": request.run_id,
-                        "run_attempt": raw_run.get("run_attempt"),
-                        "workflow_name": raw_run.get("name"),
-                        "head_branch": raw_run.get("head_branch"),
-                        "head_sha": raw_run.get("head_sha"),
-                        "status": raw_run.get("status"),
-                        "conclusion": raw_run.get("conclusion"),
-                        "run_url": raw_run.get("html_url"),
-                        "remote_fingerprint": remote_fingerprint,
-                        "remote_artifacts": remote_artifacts,
-                        "artifacts": [item.model_dump() for item in artifacts],
-                        "synced_at": _utc_now_iso(),
-                    },
-                )
+                    raise
                 logger.warning(
-                    "artifact_sync.manifest_written owner=%s repo=%s workspace_id=%s run_id=%s manifest_path=%s artifact_count=%s",
+                    "artifact_sync.artifact_digest_ok owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s archive_bytes=%s",
                     owner,
                     repo,
                     workspace_id,
                     request.run_id,
-                    manifest_path_rel,
-                    len(artifacts),
+                    artifact_id,
+                    name,
+                    len(archive_data),
                 )
+                archive_payloads.append((item, archive_data, artifact_started))
+
+            logger.warning(
+                "artifact_sync.lock_attempt owner=%s repo=%s workspace_id=%s run_id=%s phase=write target_dir=%s elapsed_ms=%.2f",
+                owner,
+                repo,
+                workspace_id,
+                request.run_id,
+                target_dir_rel,
+                (time.perf_counter() - sync_started) * 1000,
+            )
+            with self.manager.lock(workspace_id):
+                logger.warning(
+                    "artifact_sync.lock_acquired owner=%s repo=%s workspace_id=%s run_id=%s phase=write target_dir=%s elapsed_ms=%.2f",
+                    owner,
+                    repo,
+                    workspace_id,
+                    request.run_id,
+                    target_dir_rel,
+                    (time.perf_counter() - sync_started) * 1000,
+                )
+                existing_manifest = _read_artifact_manifest(manifest_path)
+                skipped = _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
+                if skipped:
+                    artifacts = [SyncedRunArtifact(**item) for item in existing_manifest.get("artifacts", [])]
+                    logger.warning(
+                        "artifact_sync.skip_current_after_download owner=%s repo=%s workspace_id=%s run_id=%s artifact_count=%s target_dir=%s remote_fingerprint=%s",
+                        owner,
+                        repo,
+                        workspace_id,
+                        request.run_id,
+                        len(artifacts),
+                        target_dir_rel,
+                        remote_fingerprint,
+                    )
+                else:
+                    _remove_existing_artifact_target(target_dir)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    artifacts = []
+                    for item, archive_data, artifact_started in archive_payloads:
+                        artifact_id = int(item["artifact_id"])
+                        name = str(item["name"])
+                        destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
+                        extract_started = time.perf_counter()
+                        try:
+                            file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
+                        except Exception:
+                            logger.exception(
+                                "artifact_sync.artifact_extract_error owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s archive_bytes=%s destination_dir=%s duration_ms=%.2f",
+                                owner,
+                                repo,
+                                workspace_id,
+                                request.run_id,
+                                artifact_id,
+                                name,
+                                len(archive_data),
+                                _relative_repo_path(repo_dir, destination),
+                                (time.perf_counter() - extract_started) * 1000,
+                            )
+                            raise
+                        logger.warning(
+                            "artifact_sync.artifact_extracted owner=%s repo=%s workspace_id=%s run_id=%s artifact_id=%s name=%s file_count=%s bytes_written=%s duration_ms=%.2f total_artifact_ms=%.2f",
+                            owner,
+                            repo,
+                            workspace_id,
+                            request.run_id,
+                            artifact_id,
+                            name,
+                            file_count,
+                            bytes_written,
+                            (time.perf_counter() - extract_started) * 1000,
+                            (time.perf_counter() - artifact_started) * 1000,
+                        )
+                        artifacts.append(
+                            SyncedRunArtifact(
+                                artifact_id=artifact_id,
+                                name=name,
+                                digest=str(item["digest"]),
+                                destination_dir=_relative_repo_path(repo_dir, destination),
+                                file_count=file_count,
+                                bytes_written=bytes_written,
+                            )
+                        )
+                    _write_artifact_manifest(
+                        manifest_path,
+                        {
+                            "run_id": request.run_id,
+                            "run_attempt": raw_run.get("run_attempt"),
+                            "workflow_name": raw_run.get("name"),
+                            "head_branch": raw_run.get("head_branch"),
+                            "head_sha": raw_run.get("head_sha"),
+                            "status": raw_run.get("status"),
+                            "conclusion": raw_run.get("conclusion"),
+                            "run_url": raw_run.get("html_url"),
+                            "remote_fingerprint": remote_fingerprint,
+                            "remote_artifacts": remote_artifacts,
+                            "artifacts": [item.model_dump() for item in artifacts],
+                            "synced_at": _utc_now_iso(),
+                        },
+                    )
+                    logger.warning(
+                        "artifact_sync.manifest_written owner=%s repo=%s workspace_id=%s run_id=%s manifest_path=%s artifact_count=%s",
+                        owner,
+                        repo,
+                        workspace_id,
+                        request.run_id,
+                        manifest_path_rel,
+                        len(artifacts),
+                    )
         response = SyncRunArtifactsToWorkspaceResponse(
             workspace_id=workspace_id,
             run_id=request.run_id,
