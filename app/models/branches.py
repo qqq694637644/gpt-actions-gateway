@@ -8,7 +8,7 @@ from app.models.common import GatewayBaseModel, IdempotentRequest
 class CreateWorkBranchRequest(IdempotentRequest):
     base_ref: str | None = Field(default=None, description="Base branch name or exact commit SHA. Defaults to DEFAULT_BASE_BRANCH.")
     base_sha: str | None = Field(default=None, min_length=7, description="Exact commit SHA to branch from. Takes precedence over base_ref.")
-    branch: str | None = Field(default=None, description="Optional explicit gpt/* branch name.")
+    branch: str | None = Field(default=None, description="Optional explicit branch name. If omitted, the gateway generates one using WRITE_BRANCH_PREFIX.")
     purpose_slug: str = Field(default="task", min_length=1, max_length=80)
     continue_if_exists: bool = Field(default=True)
 

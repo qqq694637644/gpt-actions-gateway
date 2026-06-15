@@ -8,20 +8,20 @@ GPT Actions GitHub Gateway is a personal GitHub implementation platform for repo
 workspace → code changes → PR → CI → merge/ops
 ```
 
-The gateway owns GitHub credentials and exposes task-oriented operations for reading repository state, preparing backend Git workspaces, making controlled local edits, committing to `gpt/*` branches, opening or updating PRs, inspecting CI, syncing safe artifacts, dispatching/rerunning workflows, merging reviewed PRs, and maintaining Actions caches.
+The gateway owns GitHub credentials and exposes task-oriented operations for reading repository state, preparing backend Git workspaces, making controlled local edits, committing to explicit branches, opening or updating PRs, inspecting CI, syncing safe artifacts, dispatching/rerunning workflows, merging reviewed PRs, and maintaining Actions caches.
 
 `workspaceExecPwsh` runs controlled PowerShell from the repository root. It does not receive GitHub publish credentials; publishing is only available through explicit gateway operations such as `workspaceCommitAndPush`.
 
 ## Safety model
 
-The platform is intentionally conservative. The main safety boundaries are:
+The platform is intended for personal maintenance workflows. The main safety boundaries are:
 
 - **Repo allowlist:** by default, only repositories in `ALLOWED_REPOS` are accepted. `ALLOW_ALL_REPOS=true` is an explicit broadening switch.
-- **`gpt/*` write boundary:** work branches and PR heads must use `WRITE_BRANCH_PREFIX`, normally `gpt/`. Direct writes to `main`, `master`, `develop`, `release/*`, `production/*`, and `hotfix/*` are refused.
+- **Open write branches:** explicit write branches are not prefix-restricted. `WRITE_BRANCH_PREFIX`, normally `gpt/`, is only used when the gateway auto-generates a branch name.
 - **`expected_head_sha`:** publishing and merge flows pin the head SHA that the caller reviewed. If the remote branch or PR head changes, the operation is rejected instead of silently racing.
 - **Path policy:** generated, dependency, VCS, binary-like, credential, certificate, and secret paths are blocked. Workflow edits are blocked unless `ALLOW_WORKFLOW_EDIT=true`.
 - **Secret policy:** runtime environment exposure is minimized; workspace commands cannot enumerate or read sensitive environment variables, GitHub secrets, or GitHub CLI auth state.
-- **OpenAPI action risk:** the exported GPT Actions schema marks every public operation as non-consequential/low risk. Backend policy still enforces write branches, expected head SHAs, path checks, merge guards, cache deletion confirmation, and audit records.
+- **OpenAPI action risk:** the exported GPT Actions schema marks every public operation as non-consequential/low risk. Backend policy still enforces expected head SHAs, path checks, merge guards, cache deletion confirmation, and audit records.
 - **Audit:** operations record request metadata, branch/head context, changed files, command hashes, and cache/workspace decisions where applicable.
 - **Idempotency:** mutating operations accept `idempotency_key` so retries can safely return the same response when the request payload is identical.
 
@@ -35,13 +35,13 @@ Typical operations: `prepareWorkspace`, `workspaceExecPwsh`, `workspaceStatus`, 
 
 ### L1 local workspace changes
 
-Use a prepared `gpt/*` workspace for local-only edits. `workspaceApplyPatch` is preferred for small auditable text patches. `workspaceWriteFile` is for complete UTF-8 text file creation or replacement. These operations do not commit, push, create PRs, or trigger CI.
+Use a prepared branch workspace for local-only edits. `workspaceApplyPatch` is preferred for small auditable text patches. `workspaceWriteFile` is for complete UTF-8 text file creation or replacement. These operations do not commit, push, create PRs, or trigger CI.
 
 Typical operations: `workspaceApplyPatch`, `workspaceWriteFile`, `workspaceReset`, `syncRunArtifactsToWorkspace`.
 
 ### L2 publish / PR
 
-Use `createWorkBranch`, `workspaceCommitAndPush`, and PR operations to publish reviewed workspace changes to GitHub. Publishing requires the branch to be under `gpt/*` and the remote branch head to equal `expected_head_sha`.
+Use `createWorkBranch`, `workspaceCommitAndPush`, and PR operations to publish reviewed workspace changes to GitHub. Publishing allows any explicit branch name and requires the remote branch head to equal `expected_head_sha`.
 
 Typical operations: `createWorkBranch`, `workspaceCommitAndPush`, `createPullRequest`, `updatePullRequest`, `commentPullRequest`.
 
@@ -53,14 +53,14 @@ Typical operations: `queryCiStatus`, `queryFailedCiLog`, `getCiRun`, `getCiJobs`
 
 ### L4 merge and cache deletion
 
-Merge and cache deletion are high-risk operations. Merge requires a current `expected_head_sha` and a non-draft open PR whose head branch is still `gpt/*`. Cache deletion defaults to dry run and actual deletion requires explicit confirmation or verified expected metadata.
+Merge and cache deletion are high-risk operations. Merge requires a current `expected_head_sha` and a non-draft open PR. Cache deletion defaults to dry run and actual deletion requires explicit confirmation or verified expected metadata.
 
 Typical operations: `mergePullRequest`, `deleteCache`.
 
 ## Standard implementation flow
 
 1. **Create branch:** call `createWorkBranch` from the intended base ref.
-2. **Prepare workspace:** call `prepareWorkspace` with the returned `gpt/*` branch and a `ws_` workspace id when deterministic reuse is helpful.
+2. **Prepare workspace:** call `prepareWorkspace` with the returned or requested branch and a `ws_` workspace id when deterministic reuse is helpful.
 3. **Inspect:** use `workspaceExecPwsh` to list structure, search relevant files, and read source/tests/config before editing.
 4. **Edit:** use `workspaceApplyPatch` for small text edits or `workspaceWriteFile` for full UTF-8 file replacement.
 5. **Validate:** run targeted tests, lint, type checks, schema checks, or the smallest meaningful smoke test inside the workspace.
@@ -109,7 +109,7 @@ Actual deletion requires either `confirm=true` after review or exact expected me
 
 ## Merge flow
 
-Only merge when the user explicitly asks for it. Before merging, call `getPullRequest` and verify the PR is open, not draft, mergeable, based on the intended branch, and still has a `gpt/*` head branch. Then call `mergePullRequest` with the current `expected_head_sha` and the intended merge method.
+Only merge when the user explicitly asks for it. Before merging, call `getPullRequest` and verify the PR is open, not draft, mergeable, and based on the intended branch. Then call `mergePullRequest` with the current `expected_head_sha` and the intended merge method.
 
 If the PR head changes between review and merge, the gateway rejects the merge. Re-read the PR and CI state before retrying.
 
@@ -139,7 +139,7 @@ ALLOW_WORKFLOW_EDIT=false
 ALLOW_DELETE_FILES=false
 ```
 
-Set `ALLOW_ALL_REPOS=true`, `ALLOW_WORKFLOW_EDIT=true`, or `ALLOW_DELETE_FILES=true` only after reviewing the operational risk.
+Set `ALLOW_ALL_REPOS=true`, `ALLOW_WORKFLOW_EDIT=true`, or `ALLOW_DELETE_FILES=true` only after reviewing the operational risk. `WRITE_BRANCH_PREFIX` only controls generated branch names; explicit branches are writable without a prefix requirement.
 
 ### Workspace limits
 
@@ -172,7 +172,7 @@ WORKSPACE_PYTHON_AUTO_GITIGNORE=true
 WORKSPACE_PYTHON_AUTO_ACTIVATE=true
 ```
 
-When enabled, writable `gpt/*` workspaces get a local Python virtual environment. The venv path is ignored through `.git/info/exclude`, not a tracked `.gitignore` edit. `workspaceExecPwsh` activates the venv before running user scripts when auto-activation is enabled. Dependency auto-install is not part of the current configuration surface.
+When enabled, eligible writable workspaces get a local Python virtual environment. The venv path is ignored through `.git/info/exclude`, not a tracked `.gitignore` edit. `workspaceExecPwsh` activates the venv before running user scripts when auto-activation is enabled. Dependency auto-install is not part of the current configuration surface.
 
 ### Advanced
 

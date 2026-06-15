@@ -118,7 +118,9 @@ def make_local_repo(tmp_path: Path) -> tuple[Path, Path]:
     git("add", "README.md", cwd=source)
     git("commit", "-m", "Initial", cwd=source)
     git("checkout", "-b", "gpt/task", cwd=source)
-    git("push", "origin", "main", "gpt/task", cwd=source)
+    git("checkout", "-b", "feature/task", cwd=source)
+    git("push", "origin", "main", "gpt/task", "feature/task", cwd=source)
+    git("checkout", "gpt/task", cwd=source)
     return remote, source
 
 
@@ -384,6 +386,31 @@ def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):
     assert response.new_head_sha != prepared.head_sha
     assert response.changed_files[0].path == "README.md"
     assert git("rev-parse", "gpt/task", cwd=remote) == response.new_head_sha
+
+
+def test_workspace_prepare_commit_and_push_allows_arbitrary_branch(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="feature/task")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    (repo_dir / "README.md").write_text("after feature\n", encoding="utf-8")
+
+    response = run(
+        service.commit_and_push(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            WorkspaceCommitAndPushRequest(branch="feature/task", expected_head_sha=prepared.head_sha, commit_message="Update feature branch"),
+        )
+    )
+
+    assert prepared.branch == "feature/task"
+    assert response.pushed is True
+    assert response.previous_head_sha == prepared.head_sha
+    assert response.new_head_sha != prepared.head_sha
+    assert response.changed_files[0].path == "README.md"
+    assert git("rev-parse", "feature/task", cwd=remote) == response.new_head_sha
 
 
 def test_workspace_commit_and_push_recovers_after_commit_succeeds_but_push_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

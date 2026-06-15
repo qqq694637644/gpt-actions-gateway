@@ -150,13 +150,13 @@ def test_merge_pull_request_rejects_head_sha_mismatch() -> None:
     assert exc.value.message == "Pull request head SHA does not match expected_head_sha."
 
 
-def test_merge_pull_request_rejects_non_gpt_head_branch() -> None:
+def test_merge_pull_request_allows_arbitrary_head_branch() -> None:
     service = make_service(MergeGitHubStub(head_ref="feature/fix-ci"))
 
-    with pytest.raises(ApiError) as exc:
-        asyncio.run(service.merge_pull_request("acme", "demo", merge_request()))
+    response = asyncio.run(service.merge_pull_request("acme", "demo", merge_request()))
 
-    assert exc.value.error_code == ErrorCode.BRANCH_NOT_ALLOWED
+    assert response.merged is True
+    assert response.pull_request.head_branch == "feature/fix-ci"
 
 
 def test_merge_pull_request_rejects_invalid_pr_state() -> None:

@@ -9,7 +9,7 @@ from app.workspace.ids import WORKSPACE_ID_PATTERN
 
 
 class PrepareWorkspaceBaseRequest(IdempotentRequest):
-    branch: str | None = Field(default=None, description="gpt/* branch to prepare for read/write maintenance.")
+    branch: str | None = Field(default=None, description="Branch to prepare for read/write maintenance.")
     source_pr_number: int | None = Field(default=None, ge=1, description="Prepare from this PR head branch.")
     base_ref: str | None = Field(default=None, description="Read-only base branch/ref for investigation.")
     workspace_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=WORKSPACE_ID_PATTERN)

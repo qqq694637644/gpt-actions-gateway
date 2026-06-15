@@ -84,3 +84,20 @@ def test_create_work_branch_can_use_arbitrary_existing_branch_as_base() -> None:
     assert response.base_ref == "feature/parent"
     assert response.base_sha == MAIN_SHA
     assert response.head_sha == MAIN_SHA
+
+
+def test_create_work_branch_can_create_arbitrary_named_branch() -> None:
+    service = make_service()
+
+    response = asyncio.run(
+        service.create_work_branch(
+            "acme",
+            "demo",
+            CreateWorkBranchRequest(base_ref="main", branch="feature/direct-maintenance", purpose_slug="follow-up"),
+        )
+    )
+
+    assert response.branch == "feature/direct-maintenance"
+    assert response.base_ref == "main"
+    assert response.base_sha == MAIN_SHA
+    assert response.head_sha == MAIN_SHA
