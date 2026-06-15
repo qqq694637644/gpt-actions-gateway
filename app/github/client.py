@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 _ARTIFACT_DOWNLOAD_PROGRESS_BYTES = 10 * 1024 * 1024
 _ARTIFACT_DOWNLOAD_PROGRESS_SECONDS = 10.0
+_AZURE_BLOB_HOST_SUFFIX = ".blob.core.windows.net"
 
 
 class GitHubClient:
@@ -430,6 +431,89 @@ class GitHubClient:
 
     async def _download_artifact_redirect_url(self, owner: str, repo: str, artifact_id: int, redirect_url: str, started: float) -> bytes:
         parsed = urlparse(redirect_url)
+        if self.settings.artifact_azure_blob_downloader_enabled and _is_azure_blob_host(parsed.netloc):
+            try:
+                return await self._download_artifact_azure_blob_url(owner, repo, artifact_id, redirect_url, parsed.netloc, started)
+            except ImportError:
+                logger.exception(
+                    "github_artifact_download.azure_import_error_fallback owner=%s repo=%s artifact_id=%s redirect_host=%s",
+                    owner,
+                    repo,
+                    artifact_id,
+                    parsed.netloc,
+                )
+            except Exception:
+                logger.exception(
+                    "github_artifact_download.azure_error_fallback owner=%s repo=%s artifact_id=%s redirect_host=%s duration_ms=%.2f",
+                    owner,
+                    repo,
+                    artifact_id,
+                    parsed.netloc,
+                    (time.perf_counter() - started) * 1000,
+                )
+        return await self._download_artifact_httpx_stream(owner, repo, artifact_id, redirect_url, started)
+
+    async def _download_artifact_azure_blob_url(self, owner: str, repo: str, artifact_id: int, redirect_url: str, redirect_host: str, started: float) -> bytes:
+        from azure.storage.blob.aio import BlobClient
+
+        data: bytes
+        last_progress_time = time.perf_counter()
+        last_progress_bytes = 0
+
+        async def progress_hook(current: int, total: int | None) -> None:
+            nonlocal last_progress_time, last_progress_bytes
+            now = time.perf_counter()
+            if current - last_progress_bytes < _ARTIFACT_DOWNLOAD_PROGRESS_BYTES and now - last_progress_time < _ARTIFACT_DOWNLOAD_PROGRESS_SECONDS:
+                return
+            elapsed_seconds = max(now - started, 0.001)
+            logger.warning(
+                "github_artifact_download.azure_progress owner=%s repo=%s artifact_id=%s bytes=%s content_length=%s duration_ms=%.2f mib_per_second=%.2f",
+                owner,
+                repo,
+                artifact_id,
+                current,
+                total,
+                elapsed_seconds * 1000,
+                (current / (1024 * 1024)) / elapsed_seconds,
+            )
+            last_progress_bytes = current
+            last_progress_time = now
+
+        logger.warning(
+            "github_artifact_download.azure_start owner=%s repo=%s artifact_id=%s redirect_host=%s max_concurrency=%s max_single_get_size=%s max_chunk_get_size=%s",
+            owner,
+            repo,
+            artifact_id,
+            redirect_host,
+            self.settings.artifact_azure_blob_max_concurrency,
+            self.settings.artifact_azure_blob_max_single_get_size,
+            self.settings.artifact_azure_blob_max_chunk_get_size,
+        )
+        blob_client = BlobClient.from_blob_url(
+            redirect_url,
+            credential=None,
+            max_single_get_size=self.settings.artifact_azure_blob_max_single_get_size,
+            max_chunk_get_size=self.settings.artifact_azure_blob_max_chunk_get_size,
+        )
+        try:
+            downloader = await blob_client.download_blob(max_concurrency=self.settings.artifact_azure_blob_max_concurrency, progress_hook=progress_hook)
+            data = await downloader.readall()
+        finally:
+            await blob_client.close()
+        duration_ms = (time.perf_counter() - started) * 1000
+        logger.warning(
+            "github_artifact_download.azure_done owner=%s repo=%s artifact_id=%s bytes=%s duration_ms=%.2f mib_per_second=%.2f",
+            owner,
+            repo,
+            artifact_id,
+            len(data),
+            duration_ms,
+            (len(data) / (1024 * 1024)) / max(duration_ms / 1000, 0.001),
+        )
+        return data
+
+    async def _download_artifact_httpx_stream(self, owner: str, repo: str, artifact_id: int, redirect_url: str, started: float) -> bytes:
+        parsed = urlparse(redirect_url)
         data = bytearray()
         last_progress_time = time.perf_counter()
         last_progress_bytes = 0
@@ -531,3 +615,8 @@ class GitHubClient:
 
     async def delete_actions_cache(self, owner: str, repo: str, cache_id: int) -> None:
         await self._request("DELETE", f"/repos/{owner}/{repo}/actions/caches/{cache_id}")
+
+
+def _is_azure_blob_host(host: str) -> bool:
+    normalized = host.split(":", 1)[0].lower().strip()
+    return normalized.endswith(_AZURE_BLOB_HOST_SUFFIX)
