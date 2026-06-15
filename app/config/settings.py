@@ -61,7 +61,7 @@ class Settings(BaseSettings):
 
     allowed_repos: str = ""
     allow_all_repos: bool = False
-    read_branch_allowlist: str = "main,master,develop,gpt/*"
+    read_branch_allowlist: str = "*"
     write_branch_prefix: str = "gpt/"
     default_base_branch: str = "main"
 

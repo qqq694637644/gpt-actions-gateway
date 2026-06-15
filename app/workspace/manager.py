@@ -120,7 +120,8 @@ class WorkspaceManager:
             branch = (source_pr.get("head") or {}).get("ref")
             if not branch:
                 raise ApiError(ErrorCode.GITHUB_ERROR, "PR head branch was missing from GitHub response.", status_code=502)
-        if branch is not None:
+        writable = branch is not None
+        if writable:
             self.policy.assert_write_branch_allowed(branch)
             target_ref = branch
         else:
@@ -155,6 +156,13 @@ class WorkspaceManager:
                     raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Workspace belongs to a different repository.", status_code=403)
                 if meta.branch != target_ref:
                     raise ApiError(ErrorCode.WORKSPACE_DIRTY, "Workspace already targets a different ref; create a new workspace.", status_code=409, details={"workspace_branch": meta.branch, "requested_branch": target_ref})
+                if meta.writable != writable:
+                    raise ApiError(
+                        ErrorCode.WORKSPACE_DIRTY,
+                        "Workspace already targets this ref with a different writability mode; create a new workspace.",
+                        status_code=409,
+                        details={"workspace_writable": meta.writable, "requested_writable": writable},
+                    )
             else:
                 workspace_dir.mkdir(parents=True, exist_ok=True)
                 meta = WorkspaceMeta(
@@ -165,6 +173,7 @@ class WorkspaceManager:
                     default_branch=default_branch,
                     head_sha="",
                     source_pr_number=source_pr_number,
+                    writable=writable,
                 )
             mirror_stats = await self._ensure_mirror(owner, repo, refresh=refresh)
             workspace_start = time.perf_counter()
@@ -180,13 +189,14 @@ class WorkspaceManager:
             await self.checkout_ref(repo_dir, target_ref)
             if clean:
                 await self.reset_to_remote(repo_dir, target_ref, clean_untracked=True)
-            if self.should_use_python_venv(target_ref, source_pr_number=source_pr_number):
+            if self.should_use_python_venv(writable=writable):
                 await self.ensure_python_venv(repo_dir)
             workspace_duration_ms = round((time.perf_counter() - workspace_start) * 1000)
             head_sha = await self.head_sha(repo_dir)
             meta.head_sha = head_sha
             meta.default_branch = default_branch
             meta.source_pr_number = source_pr_number
+            meta.writable = writable
             save_meta(workspace_dir, meta)
             diagnostics = WorkspacePrepareStats(
                 meta=meta,
@@ -231,10 +241,8 @@ class WorkspaceManager:
         await self.git.run(["git", "config", "user.name", self.settings.workspace_git_user_name], cwd=repo_dir)
         await self.git.run(["git", "config", "user.email", self.settings.workspace_git_user_email], cwd=repo_dir)
 
-    def should_use_python_venv(self, branch: str, *, source_pr_number: int | None = None) -> bool:
-        if not self.settings.workspace_python_venv_enabled:
-            return False
-        return source_pr_number is not None or branch.startswith(self.settings.write_branch_prefix)
+    def should_use_python_venv(self, *, writable: bool) -> bool:
+        return self.settings.workspace_python_venv_enabled and writable
 
     async def ensure_python_venv(self, repo_dir: Path) -> None:
         venv_dir = self.settings.workspace_python_venv_dir

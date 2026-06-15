@@ -18,6 +18,7 @@ class WorkspaceMeta(BaseModel):
     default_branch: str
     head_sha: str
     source_pr_number: int | None = None
+    writable: bool = True
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 

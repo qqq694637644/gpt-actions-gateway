@@ -39,6 +39,7 @@ if not branch or not branch.strip():
 - `expected_head_sha` 仍然必须匹配远端分支 head，避免静默覆盖别人推送的新提交。
 - workspace 仍然必须属于当前 owner/repo。
 - `workspaceCommitAndPush` 仍要求 request branch 等于 prepared workspace branch。
+- `base_ref` workspace 仍是只读发布语义，不能 `workspaceCommitAndPush`。
 - 写路径策略仍然生效，`.env`、secret、credential、依赖目录、生成目录、二进制文件等仍按原策略拒绝。
 - workflow 文件编辑仍受 `ALLOW_WORKFLOW_EDIT` 控制。
 - 删除文件仍受 `ALLOW_DELETE_FILES` 控制。
@@ -58,6 +59,10 @@ if not branch or not branch.strip():
 - `BranchService.create_work_branch()`
 - `PullRequestService.create_pull_request()`
 - `PullRequestService.merge_pull_request()`
+
+### 3.1.1 `app/services/branches.py`
+
+`createWorkBranch(branch="")` 不再兜底生成分支。只有 `branch is None` 才自动生成分支名；空字符串会走 `assert_write_branch_allowed()` 并抛 `BRANCH_NOT_ALLOWED`。
 
 ### 3.2 `app/models/workspaces.py`
 
@@ -102,6 +107,20 @@ WRITE_BRANCH_PREFIX=gpt/
 WRITE_BRANCH_PREFIX=gpt/
 ```
 
+`READ_BRANCH_ALLOWLIST` 默认改为 `*`，所以 read-only `base_ref` 和 CI/cache branch 查询默认也不再限制在 `main,master,develop,gpt/*`。
+
+### 3.5.1 `.github/workflows/gpt-validation.yml`
+
+移除 `push.branches` 过滤，让任意分支 push 都触发 validation。这样后端允许任意分支写入后，CI 不再只覆盖 `gpt/**`。
+
+### 3.5.2 `app/workspace/manager.py` / `app/workspace/models.py`
+
+新增 workspace 内部 `writable` 标记：
+
+- `branch=...` 和 `source_pr_number=...` 准备的 workspace 是 writable。
+- `base_ref=...` 准备的 workspace 是 read-only。
+- Python venv 是否创建/激活基于 `writable`，不再基于 `WRITE_BRANCH_PREFIX`。
+
 ### 3.6 `README.md`
 
 把安全模型、能力分层、发布流程、merge 流程里的 `gpt/*` 写边界说法改成“显式分支不再有前缀限制”。
@@ -145,6 +164,8 @@ WRITE_BRANCH_PREFIX=gpt/
 
 - `tests/test_branches_enhanced.py`
   - `createWorkBranch(branch="feature/direct-maintenance")` 允许。
+  - `createWorkBranch(branch="")` 必须拒绝。
+  - `createWorkBranch(branch=None)` 才允许自动生成 `WRITE_BRANCH_PREFIX` 分支。
 
 - `tests/test_pulls_new.py`
   - `createPullRequest(head_branch="feature/direct-maintenance")` 允许。
@@ -156,6 +177,12 @@ WRITE_BRANCH_PREFIX=gpt/
   - 本地 bare remote 新增 `feature/task`。
   - `prepareWorkspace(branch="feature/task")` 成功。
   - 修改后 `workspaceCommitAndPush(branch="feature/task")` 成功推送回远端 `feature/task`。
+  - `feature/task` writable workspace 会创建 Python venv。
+  - `base_ref="feature/task"` read-only workspace 不创建 Python venv，且不能 commit/push。
+
+- workflow / read allowlist
+  - push CI 不再限制 `gpt/**`。
+  - 默认 `READ_BRANCH_ALLOWLIST=*` 允许 `base_ref="feature/task"`。
 
 ## 6. 风险说明
 
@@ -173,22 +200,7 @@ WRITE_BRANCH_PREFIX=gpt/
 - push 前确认 `expected_head_sha` 是刚刚 review 过的 head。
 - merge 前重新 `getPullRequest` 和 `queryCiStatus`。
 
-## 7. 不做的事
-
-本 PR 没有把 GitHub Actions workflow 的 push 触发范围从 `gpt/**` 改成所有分支。当前 workflow 仍然只在 `gpt/**` push 和面向 `main` 的 pull_request 上跑。原因是用户要求拆的是后端写分支限制；workflow 触发范围属于 CI 策略，建议单独决定。
-
-如果后续也想让任意分支 push 都触发 CI，可以再改：
-
-```yaml
-on:
-  push:
-    branches:
-      - "**"
-```
-
-或直接去掉 `push.branches` 过滤。
-
-## 8. 验收标准
+## 7. 验收标准
 
 实现完成后应满足：
 
@@ -200,4 +212,8 @@ on:
 6. `createPullRequest(head_branch="feature/direct-maintenance")` 成功。
 7. `mergePullRequest` 不再因为 head branch 非 `gpt/*` 被拒绝。
 8. 空分支仍被拒绝。
-9. 原有路径、secret、workflow、binary、delete、expected head SHA 等测试继续通过。
+9. `createWorkBranch(branch="")` 不会兜底生成分支。
+10. writable workspace 的 Python venv 不再依赖 `gpt/` 前缀。
+11. push CI 对任意分支触发。
+12. 默认 read-only `base_ref` 允许任意分支。
+13. 原有路径、secret、workflow、binary、delete、expected head SHA 等测试继续通过。

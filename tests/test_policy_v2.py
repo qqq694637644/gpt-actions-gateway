@@ -21,6 +21,11 @@ def test_write_branch_rejects_empty_branch(policy):
     assert exc.value.error_code == ErrorCode.BRANCH_NOT_ALLOWED
 
 
+def test_read_branch_default_allows_arbitrary_refs(policy):
+    policy.assert_read_ref_allowed("feature/task")
+    policy.assert_read_ref_allowed("release/1.0")
+
+
 @pytest.mark.parametrize("path", [".env", ".env.local", "secrets/prod.json", "credentials/github.json", "node_modules/a.js", "dist/app.js", "build/app.js", "coverage/report.xml", ".git/config", "key.pem", "cert.crt"])
 def test_sensitive_paths_are_blocked(policy, path):
     with pytest.raises(ApiError):

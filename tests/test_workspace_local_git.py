@@ -544,6 +544,20 @@ def test_prepare_work_branch_bootstraps_python_venv_without_committable_diff(tmp
     assert status.changed_files == []
 
 
+def test_prepare_arbitrary_branch_bootstraps_python_venv_without_prefix_check(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="feature/task", workspace_id="ws_python_feature")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+
+    assert prepared.branch == "feature/task"
+    assert (repo_dir / ".venv" / "pyvenv.cfg").exists()
+    status = run(service.status("acme", "demo", prepared.workspace_id, WorkspaceStatusRequest()))
+    assert status.dirty is False
+    assert status.changed_files == []
+
+
 def test_prepare_base_ref_does_not_bootstrap_python_venv(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
@@ -553,6 +567,31 @@ def test_prepare_base_ref_does_not_bootstrap_python_venv(tmp_path: Path):
 
     assert not (repo_dir / ".venv").exists()
     assert not (repo_dir / ".gitignore").exists()
+
+
+def test_prepare_arbitrary_base_ref_is_read_only_and_does_not_bootstrap_python_venv(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote, workspace_python_venv_enabled=True, workspace_python_venv_python=sys.executable)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(base_ref="feature/task", workspace_id="ws_read_only_feature")))
+    repo_dir = manager.repo_dir(prepared.workspace_id)
+    (repo_dir / "README.md").write_text("read-only change\n", encoding="utf-8")
+
+    assert prepared.branch == "feature/task"
+    assert not (repo_dir / ".venv").exists()
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.commit_and_push(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                WorkspaceCommitAndPushRequest(branch="feature/task", expected_head_sha=prepared.head_sha, commit_message="Should not publish"),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.WORKSPACE_POLICY_VIOLATION
+    assert "read-only base_ref workspace" in exc.value.message
 
 
 def test_prepare_python_venv_does_not_modify_tracked_gitignore_or_create_status_diff(tmp_path: Path):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.models.branches import CreateWorkBranchRequest
@@ -101,3 +103,34 @@ def test_create_work_branch_can_create_arbitrary_named_branch() -> None:
     assert response.base_ref == "main"
     assert response.base_sha == MAIN_SHA
     assert response.head_sha == MAIN_SHA
+
+
+def test_create_work_branch_rejects_explicit_empty_branch() -> None:
+    service = make_service()
+
+    with pytest.raises(ApiError) as exc:
+        asyncio.run(
+            service.create_work_branch(
+                "acme",
+                "demo",
+                CreateWorkBranchRequest(base_ref="main", branch="", purpose_slug="empty-branch"),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.BRANCH_NOT_ALLOWED
+
+
+def test_create_work_branch_auto_generates_only_when_branch_is_none() -> None:
+    service = make_service()
+
+    response = asyncio.run(
+        service.create_work_branch(
+            "acme",
+            "demo",
+            CreateWorkBranchRequest(base_ref="main", branch=None, purpose_slug="auto branch"),
+        )
+    )
+
+    assert response.branch.startswith("gpt/auto-branch-")
+    assert response.base_ref == "main"
+    assert response.base_sha == MAIN_SHA
