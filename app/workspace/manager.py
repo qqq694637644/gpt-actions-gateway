@@ -54,19 +54,44 @@ class WorkspaceManager:
         workspace_dir = self.workspace_dir(workspace_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
         lock_path = workspace_dir / "lock"
+        pid = os.getpid()
+        acquire_started = time.perf_counter()
+        acquired_epoch = time.time()
+        logger.warning("workspace_lock.acquire_attempt workspace_id=%s lock_path=%s pid=%s", workspace_id, lock_path, pid)
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError as exc:
+            logger.warning(
+                "workspace_lock.busy workspace_id=%s lock_path=%s pid=%s existing_lock=%s acquire_ms=%.2f",
+                workspace_id,
+                lock_path,
+                pid,
+                _workspace_lock_details(lock_path),
+                (time.perf_counter() - acquire_started) * 1000,
+            )
             raise ApiError(ErrorCode.WORKSPACE_BUSY, "Workspace is locked by another operation.", status_code=409, details={"workspace_id": workspace_id}) from exc
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(str(os.getpid()))
+                handle.write(f"pid={pid}\nworkspace_id={workspace_id}\nacquired_epoch={acquired_epoch:.6f}\n")
+            logger.warning(
+                "workspace_lock.acquired workspace_id=%s lock_path=%s pid=%s acquire_ms=%.2f",
+                workspace_id,
+                lock_path,
+                pid,
+                (time.perf_counter() - acquire_started) * 1000,
+            )
             yield
         finally:
+            held_ms = (time.perf_counter() - acquire_started) * 1000
             try:
                 lock_path.unlink()
             except FileNotFoundError:
-                pass
+                logger.warning("workspace_lock.release_missing workspace_id=%s lock_path=%s pid=%s held_ms=%.2f", workspace_id, lock_path, pid, held_ms)
+            except OSError:
+                logger.exception("workspace_lock.release_error workspace_id=%s lock_path=%s pid=%s held_ms=%.2f", workspace_id, lock_path, pid, held_ms)
+                raise
+            else:
+                logger.warning("workspace_lock.released workspace_id=%s lock_path=%s pid=%s held_ms=%.2f", workspace_id, lock_path, pid, held_ms)
 
     async def prepare(
         self,
@@ -620,6 +645,38 @@ def _make_tree_entry_writable_and_retry(func: Callable[[str], object], path: str
         func(path)
     except OSError:
         raise
+
+
+def _workspace_lock_details(lock_path: Path) -> dict[str, object]:
+    details: dict[str, object] = {"path": str(lock_path)}
+    now = time.time()
+    try:
+        stat_result = lock_path.stat()
+    except FileNotFoundError:
+        details["exists"] = False
+        return details
+    except OSError as exc:
+        details["exists"] = True
+        details["stat_error"] = str(exc)
+    else:
+        details.update(
+            {
+                "exists": True,
+                "size": stat_result.st_size,
+                "mtime_epoch": round(stat_result.st_mtime, 6),
+                "age_seconds": round(max(0.0, now - stat_result.st_mtime), 3),
+            }
+        )
+    try:
+        content = lock_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        details["exists"] = False
+    except OSError as exc:
+        details["read_error"] = str(exc)
+    else:
+        details["content"] = content[:500]
+        details["content_truncated"] = len(content) > 500
+    return details
 
 
 def split_command(command: str) -> list[str]:

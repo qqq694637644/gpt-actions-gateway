@@ -562,7 +562,25 @@ class WorkspaceService:
         manifest_path_rel = _relative_repo_path(repo_dir, manifest_path)
         gitignore_path_rel = ".git/info/exclude"
 
+        logger.warning(
+            "artifact_sync.lock_attempt owner=%s repo=%s workspace_id=%s run_id=%s target_dir=%s elapsed_ms=%.2f",
+            owner,
+            repo,
+            workspace_id,
+            request.run_id,
+            target_dir_rel,
+            (time.perf_counter() - sync_started) * 1000,
+        )
         with self.manager.lock(workspace_id):
+            logger.warning(
+                "artifact_sync.lock_acquired owner=%s repo=%s workspace_id=%s run_id=%s target_dir=%s elapsed_ms=%.2f",
+                owner,
+                repo,
+                workspace_id,
+                request.run_id,
+                target_dir_rel,
+                (time.perf_counter() - sync_started) * 1000,
+            )
             gitignore_updated = _ensure_gpt_artifacts_local_exclude(repo_dir)
             existing_manifest = _read_artifact_manifest(manifest_path)
             skipped = _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
