@@ -511,6 +511,14 @@ class WorkspaceService:
                 for item in remote_artifacts:
                     artifact_id = int(item["artifact_id"])
                     name = str(item["name"])
+                    artifact_size = item.get("size_in_bytes")
+                    if isinstance(artifact_size, int) and artifact_size > self.settings.artifact_max_download_bytes:
+                        raise ApiError(
+                            ErrorCode.VALIDATION_ERROR,
+                            "Artifact exceeds configured download size limit.",
+                            status_code=413,
+                            details={"artifact_id": artifact_id, "size_in_bytes": artifact_size, "max_bytes": self.settings.artifact_max_download_bytes},
+                        )
                     destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
                     archive_data = await self.github.download_artifact(owner, repo, artifact_id)
                     _verify_artifact_digest(archive_data, str(item["digest"]))
