@@ -120,6 +120,7 @@ WRITE_BRANCH_PREFIX=gpt/
 - `branch=...` 和 `source_pr_number=...` 准备的 workspace 是 writable。
 - `base_ref=...` 准备的 workspace 是 read-only。
 - Python venv 是否创建/激活基于 `writable`，不再基于 `WRITE_BRANCH_PREFIX`。
+- `writable` 是必填 metadata 字段；旧 workspace 缺字段会报错并要求重新 prepare，不会兜底为 writable。
 
 ### 3.6 `README.md`
 
@@ -179,6 +180,7 @@ WRITE_BRANCH_PREFIX=gpt/
   - 修改后 `workspaceCommitAndPush(branch="feature/task")` 成功推送回远端 `feature/task`。
   - `feature/task` writable workspace 会创建 Python venv。
   - `base_ref="feature/task"` read-only workspace 不创建 Python venv，且不能 commit/push。
+  - 旧 `meta.json` 缺少 `writable` 时拒绝发布，不会默认为 writable。
 
 - workflow / read allowlist
   - push CI 不再限制 `gpt/**`。
@@ -214,6 +216,7 @@ WRITE_BRANCH_PREFIX=gpt/
 8. 空分支仍被拒绝。
 9. `createWorkBranch(branch="")` 不会兜底生成分支。
 10. writable workspace 的 Python venv 不再依赖 `gpt/` 前缀。
-11. push CI 对任意分支触发。
-12. 默认 read-only `base_ref` 允许任意分支。
-13. 原有路径、secret、workflow、binary、delete、expected head SHA 等测试继续通过。
+11. 旧 workspace metadata 缺少 `writable` 时直接报错。
+12. push CI 对任意分支触发。
+13. 默认 read-only `base_ref` 允许任意分支。
+14. 原有路径、secret、workflow、binary、delete、expected head SHA 等测试继续通过。

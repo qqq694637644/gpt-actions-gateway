@@ -594,6 +594,30 @@ def test_prepare_arbitrary_base_ref_is_read_only_and_does_not_bootstrap_python_v
     assert "read-only base_ref workspace" in exc.value.message
 
 
+def test_legacy_workspace_meta_missing_writable_is_rejected(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(base_ref="feature/task", workspace_id="ws_legacy_meta")))
+    meta_file = manager.workspace_dir(prepared.workspace_id) / "meta.json"
+    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert meta.pop("writable") is False
+    meta_file.write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(ApiError) as exc:
+        run(
+            service.commit_and_push(
+                "acme",
+                "demo",
+                prepared.workspace_id,
+                WorkspaceCommitAndPushRequest(branch="feature/task", expected_head_sha=prepared.head_sha, commit_message="Should not publish"),
+            )
+        )
+
+    assert exc.value.error_code == ErrorCode.WORKSPACE_POLICY_VIOLATION
+    assert "missing required field 'writable'" in exc.value.message
+
+
 def test_prepare_python_venv_does_not_modify_tracked_gitignore_or_create_status_diff(tmp_path: Path):
     remote, source = make_local_repo(tmp_path)
     (source / ".gitignore").write_text("dist/\n", encoding="utf-8")
