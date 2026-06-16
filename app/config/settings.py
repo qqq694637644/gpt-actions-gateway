@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     max_blob_read_bytes: int = Field(default=2 * 1024 * 1024)
     artifact_azure_blob_downloader_enabled: bool = True
     artifact_azure_blob_max_concurrency: int = Field(default=8, ge=1)
-    artifact_azure_blob_max_single_get_size: int = Field(default=8 * 1024 * 1024)
-    artifact_azure_blob_max_chunk_get_size: int = Field(default=4 * 1024 * 1024)
+    artifact_azure_blob_max_single_get_size: int = Field(default=1 * 1024 * 1024)
+    artifact_azure_blob_max_chunk_get_size: int = Field(default=1 * 1024 * 1024)
 
     workspace_root: str = "./data/workspaces"
     workspace_mirror_root: str = "./data/mirrors"
