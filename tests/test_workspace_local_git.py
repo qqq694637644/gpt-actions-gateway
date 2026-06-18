@@ -300,28 +300,23 @@ def test_sync_run_artifacts_to_workspace_replaces_target_when_digest_changes(tmp
     assert (repo_dir / second.artifacts[0].destination_dir / "new-report.txt").read_text(encoding="utf-8") == "new\n"
 
 
-def test_sync_run_artifacts_to_workspace_requires_artifact_digest(tmp_path: Path):
+def test_sync_run_artifacts_to_workspace_computes_digest_when_gitea_metadata_omits_it(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_no_digest")))
-    service.github.artifact_digest = None  # type: ignore[attr-defined]
+    github = service.github  # type: ignore[attr-defined]
+    github.artifact_digest = None
 
-    with pytest.raises(ApiError) as exc:
-        run(
-            service.sync_run_artifacts_to_workspace(
-                "acme",
-                "demo",
-                prepared.workspace_id,
-                SyncRunArtifactsToWorkspaceRequest(run_id=77),
-            )
+    response = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
         )
-
-    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
-    assert exc.value.message == (
-        "GitHub artifact metadata did not include digest, so the gateway refused to sync it safely. "
-        "Use getRunLog/job logs instead, or enable an explicit unsafe artifact sync mode after review."
     )
-    assert exc.value.details == {"missing_artifacts": [{"artifact_id": 55, "name": "reports"}]}
+
+    assert response.artifacts[0].digest == artifact_digest(github.artifact_zip)
 
 
 def test_sync_run_artifacts_to_workspace_rejects_unsupported_digest_format(tmp_path: Path):
@@ -340,7 +335,7 @@ def test_sync_run_artifacts_to_workspace_rejects_unsupported_digest_format(tmp_p
             )
         )
 
-    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
+    assert exc.value.error_code == ErrorCode.GITEA_ERROR
     assert "Unsupported artifact digest format" in exc.value.message
 
 
@@ -360,8 +355,8 @@ def test_sync_run_artifacts_to_workspace_rejects_digest_mismatch(tmp_path: Path)
             )
         )
 
-    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
-    assert "does not match GitHub digest" in exc.value.message
+    assert exc.value.error_code == ErrorCode.GITEA_ERROR
+    assert "does not match Gitea artifact metadata" in exc.value.message
 
 
 def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):

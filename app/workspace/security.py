@@ -26,6 +26,7 @@ NETWORK_BLOCKED: list[tuple[re.Pattern[str], str]] = [
 ]
 
 SENSITIVE_ENV_EXACT = {
+    "GITEA_TOKEN",
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "GITHUB_APP_PRIVATE_KEY",
@@ -85,6 +86,7 @@ def sanitized_environment(source: Mapping[str, str] | None = None) -> dict[str, 
         {
             "GIT_TERMINAL_PROMPT": "0",
             "GCM_INTERACTIVE": "Never",
+            "GITEA_TOKEN": "",
             "GITHUB_TOKEN": "",
             "GH_TOKEN": "",
             "GITHUB_APP_PRIVATE_KEY": "",

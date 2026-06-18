@@ -38,8 +38,8 @@ def test_pat_git_credentials_require_username():
     with pytest.raises(ApiError) as exc:
         asyncio.run(_require_git_credentials(settings))
 
-    assert exc.value.error_code == ErrorCode.GITHUB_AUTH_FAILED
-    assert exc.value.message == "GITHUB_GIT_USERNAME is required when GITHUB_AUTH_MODE=pat."
+    assert exc.value.error_code == ErrorCode.GITEA_AUTH_FAILED
+    assert exc.value.message == "GITEA_GIT_USERNAME is required for authenticated Gitea Git remotes."
 
 
 async def _git_auth_config(settings: Settings) -> list[str]:

@@ -146,7 +146,7 @@ def test_merge_pull_request_rejects_head_sha_mismatch() -> None:
     with pytest.raises(ApiError) as exc:
         asyncio.run(service.merge_pull_request("acme", "demo", merge_request(expected_head_sha="9" * 40)))
 
-    assert exc.value.error_code == ErrorCode.GITHUB_CONFLICT
+    assert exc.value.error_code == ErrorCode.GITEA_CONFLICT
     assert exc.value.message == "Pull request head SHA does not match expected_head_sha."
 
 
@@ -163,17 +163,17 @@ def test_merge_pull_request_rejects_invalid_pr_state() -> None:
     closed_service = make_service(MergeGitHubStub(state="closed"))
     with pytest.raises(ApiError) as closed_exc:
         asyncio.run(closed_service.merge_pull_request("acme", "demo", merge_request()))
-    assert closed_exc.value.error_code == ErrorCode.GITHUB_CONFLICT
+    assert closed_exc.value.error_code == ErrorCode.GITEA_CONFLICT
     assert closed_exc.value.message == "Pull request is not open."
 
     draft_service = make_service(MergeGitHubStub(draft=True))
     with pytest.raises(ApiError) as draft_exc:
         asyncio.run(draft_service.merge_pull_request("acme", "demo", merge_request()))
-    assert draft_exc.value.error_code == ErrorCode.GITHUB_CONFLICT
+    assert draft_exc.value.error_code == ErrorCode.GITEA_CONFLICT
     assert draft_exc.value.message == "Draft pull requests cannot be merged."
 
     blocked_service = make_service(MergeGitHubStub(mergeable=False))
     with pytest.raises(ApiError) as blocked_exc:
         asyncio.run(blocked_service.merge_pull_request("acme", "demo", merge_request()))
-    assert blocked_exc.value.error_code == ErrorCode.GITHUB_CONFLICT
+    assert blocked_exc.value.error_code == ErrorCode.GITEA_CONFLICT
     assert blocked_exc.value.message == "Pull request is not mergeable."

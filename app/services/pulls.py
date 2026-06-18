@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.errors import ApiError, ErrorCode
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.pulls import (
     CommentPullRequestRequest,
     CommentPullRequestResponse,
@@ -24,7 +24,7 @@ from app.policy.rules import Policy
 
 
 class PullRequestService:
-    def __init__(self, github: GitHubClient, policy: Policy) -> None:
+    def __init__(self, github: GiteaClient, policy: Policy) -> None:
         self.github = github
         self.policy = policy
 
@@ -80,16 +80,16 @@ class PullRequestService:
         info = self._info(pr)
         self.policy.assert_write_branch_allowed(info.head_branch)
         if info.merged:
-            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is already merged.", status_code=409, details={"pr_number": request.pr_number})
+            raise ApiError(ErrorCode.GITEA_CONFLICT, "Pull request is already merged.", status_code=409, details={"pr_number": request.pr_number})
         if info.state != "open":
-            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is not open.", status_code=409, details={"pr_number": request.pr_number, "state": info.state})
+            raise ApiError(ErrorCode.GITEA_CONFLICT, "Pull request is not open.", status_code=409, details={"pr_number": request.pr_number, "state": info.state})
         if info.draft:
-            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Draft pull requests cannot be merged.", status_code=409, details={"pr_number": request.pr_number})
+            raise ApiError(ErrorCode.GITEA_CONFLICT, "Draft pull requests cannot be merged.", status_code=409, details={"pr_number": request.pr_number})
         if info.mergeable is False:
-            raise ApiError(ErrorCode.GITHUB_CONFLICT, "Pull request is not mergeable.", status_code=409, details={"pr_number": request.pr_number})
+            raise ApiError(ErrorCode.GITEA_CONFLICT, "Pull request is not mergeable.", status_code=409, details={"pr_number": request.pr_number})
         if request.expected_head_sha != info.head_sha:
             raise ApiError(
-                ErrorCode.GITHUB_CONFLICT,
+                ErrorCode.GITEA_CONFLICT,
                 "Pull request head SHA does not match expected_head_sha.",
                 status_code=409,
                 suggestion="Re-read the pull request and retry with the current head_sha after review.",
@@ -152,3 +152,4 @@ class PullRequestService:
             base_branch=info.base_branch,
             already_exists=already_exists,
         )
+

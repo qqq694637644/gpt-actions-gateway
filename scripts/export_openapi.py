@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-OPENAPI_SERVER_URL = "https://estranged-evergreen-hatchet.ngrok-free.dev/github"
+OPENAPI_SERVER_URL = "https://estranged-evergreen-hatchet.ngrok-free.dev/gitea"
 
 PUBLIC_OPERATION_IDS = {
     "prepareWorkspace",
@@ -79,3 +79,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

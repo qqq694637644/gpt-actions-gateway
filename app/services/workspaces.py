@@ -13,7 +13,7 @@ from typing import Any
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.ci import SyncedRunArtifact, SyncRunArtifactsToWorkspaceRequest, SyncRunArtifactsToWorkspaceResponse
 from app.models.workspaces import (
     PrepareWorkspaceRequest,
@@ -57,7 +57,7 @@ _SAFE_ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class WorkspaceService:
-    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings, manager: WorkspaceManager, audit: AuditStore) -> None:
+    def __init__(self, github: GiteaClient, policy: Policy, settings: Settings, manager: WorkspaceManager, audit: AuditStore) -> None:
         self.github = github
         self.policy = policy
         self.settings = settings
@@ -374,7 +374,7 @@ class WorkspaceService:
                         previous_head_sha=str(remote_head),
                         new_head_sha=current_head,
                         commit_sha=current_head,
-                        commit_url=f"https://github.com/{owner}/{repo}/commit/{current_head}",
+                        commit_url=self._commit_url(owner, repo, current_head),
                         changed_files=committed,
                         diff_stat=diff_stat,
                         pushed=True,
@@ -432,7 +432,7 @@ class WorkspaceService:
                         previous_head_sha=previous_head,
                         new_head_sha=new_head,
                         commit_sha=new_head,
-                        commit_url=f"https://github.com/{owner}/{repo}/commit/{new_head}",
+                        commit_url=self._commit_url(owner, repo, new_head),
                         changed_files=staged,
                         diff_stat=diff_stat,
                         pushed=True,
@@ -513,13 +513,13 @@ class WorkspaceService:
                     name = str(item["name"])
                     destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
                     archive_data = await self.github.download_artifact(owner, repo, artifact_id)
-                    _verify_artifact_digest(archive_data, str(item["digest"]))
+                    digest = _verified_or_computed_artifact_digest(archive_data, item.get("digest"))
                     file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
                     artifacts.append(
                         SyncedRunArtifact(
                             artifact_id=artifact_id,
                             name=name,
-                            digest=str(item["digest"]),
+                            digest=digest,
                             destination_dir=_relative_repo_path(repo_dir, destination),
                             file_count=file_count,
                             bytes_written=bytes_written,
@@ -638,49 +638,57 @@ class WorkspaceService:
             "total_duration_ms": result.total_duration_ms,
         }
 
+    def _commit_url(self, owner: str, repo: str, sha: str) -> str:
+        commit_url = getattr(self.github, "commit_url", None)
+        if callable(commit_url):
+            return str(commit_url(owner, repo, sha))
+        remote = self.github.git_remote_url(owner, repo)
+        return f"{remote.removesuffix('.git').rstrip('/')}/commit/{sha}"
+
 
 def _artifact_manifest_records(raw_artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
-    missing_digest: list[dict[str, Any]] = []
     for raw in raw_artifacts:
         artifact_id = raw.get("id")
         digest = raw.get("digest")
         name = str(raw.get("name") or "")
         if artifact_id is None:
-            raise ApiError(ErrorCode.GITHUB_ERROR, "GitHub artifact payload is missing id.", status_code=502, details={"artifact": raw})
-        if not isinstance(digest, str) or not digest.strip():
-            missing_digest.append({"artifact_id": artifact_id, "name": name})
-            continue
+            raise ApiError(ErrorCode.GITEA_ERROR, "Gitea artifact payload is missing id.", status_code=502, details={"artifact": raw})
         artifacts.append(
             {
                 "artifact_id": int(artifact_id),
                 "name": name,
-                "digest": digest.strip(),
+                "digest": digest.strip() if isinstance(digest, str) and digest.strip() else None,
                 "size_in_bytes": raw.get("size_in_bytes"),
                 "created_at": raw.get("created_at"),
                 "expires_at": raw.get("expires_at"),
                 "updated_at": raw.get("updated_at"),
             }
         )
-    if missing_digest:
-        raise ApiError(
-            ErrorCode.GITHUB_ERROR,
-            "GitHub artifact metadata did not include digest, so the gateway refused to sync it safely. Use getRunLog/job logs instead, or enable an explicit unsafe artifact sync mode after review.",
-            status_code=502,
-            details={"missing_artifacts": missing_digest},
-        )
     return sorted(artifacts, key=lambda item: item["artifact_id"])
 
 
 def _artifact_fingerprint_inputs(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
+    inputs: list[dict[str, Any]] = []
+    for item in artifacts:
+        entry = {
             "artifact_id": item["artifact_id"],
             "name": item["name"],
-            "digest": item["digest"],
         }
-        for item in artifacts
-    ]
+        if item.get("digest"):
+            entry["digest"] = item["digest"]
+        else:
+            entry.update(
+                {
+                    "digest": None,
+                    "size_in_bytes": item.get("size_in_bytes"),
+                    "created_at": item.get("created_at"),
+                    "expires_at": item.get("expires_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+            )
+        inputs.append(entry)
+    return inputs
 
 
 def _ensure_gpt_artifacts_local_exclude(repo_dir: Path) -> bool:
@@ -780,23 +788,28 @@ def _extract_artifact_archive(data: bytes, destination: Path) -> tuple[int, int]
     return file_count, bytes_written
 
 
-def _verify_artifact_digest(data: bytes, digest: str) -> None:
+def _verified_or_computed_artifact_digest(data: bytes, digest: Any) -> str:
+    actual = f"sha256:{hashlib.sha256(data).hexdigest()}"
+    if digest is None:
+        return actual
+    if not isinstance(digest, str) or not digest.strip():
+        return actual
     algorithm, separator, expected = digest.strip().partition(":")
     if separator != ":" or algorithm.lower() != "sha256" or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
         raise ApiError(
-            ErrorCode.GITHUB_ERROR,
+            ErrorCode.GITEA_ERROR,
             "Unsupported artifact digest format; expected sha256:<64 hex>.",
             status_code=502,
             details={"digest": digest},
         )
-    actual = hashlib.sha256(data).hexdigest()
-    if actual.lower() != expected.lower():
+    if actual.removeprefix("sha256:").lower() != expected.lower():
         raise ApiError(
-            ErrorCode.GITHUB_ERROR,
-            "Downloaded artifact digest does not match GitHub digest.",
+            ErrorCode.GITEA_ERROR,
+            "Downloaded artifact digest does not match Gitea artifact metadata.",
             status_code=502,
-            details={"expected_digest": digest, "actual_digest": f"sha256:{actual}"},
+            details={"expected_digest": digest, "actual_digest": actual},
         )
+    return digest.strip()
 
 
 def _safe_zip_member_path(filename: str) -> PurePosixPath:
@@ -827,3 +840,4 @@ def _safe_artifact_name(name: str) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+

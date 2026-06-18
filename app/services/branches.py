@@ -5,14 +5,14 @@ from datetime import UTC, datetime
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.branches import CreateWorkBranchRequest, CreateWorkBranchResponse
 from app.policy.rules import Policy, is_sha, sanitize_purpose_slug
 from app.storage.audit import AuditStore
 
 
 class BranchService:
-    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
+    def __init__(self, github: GiteaClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
         self.github = github
         self.policy = policy
         self.settings = settings
@@ -36,7 +36,8 @@ class BranchService:
             await self.github.create_ref(owner, repo, branch, base_sha)
             response = CreateWorkBranchResponse(branch=branch, base_ref=base_ref, base_sha=base_sha, head_sha=base_sha, created=True)
         except ApiError as exc:
-            if exc.error_code != ErrorCode.GITHUB_CONFLICT or not request.continue_if_exists:
+            conflict_codes = {str(ErrorCode.GITEA_CONFLICT), str(ErrorCode.GITHUB_CONFLICT)}
+            if exc.error_code not in conflict_codes or not request.continue_if_exists:
                 raise
             head_sha = await self.github.get_branch_head(owner, repo, branch)
             response = CreateWorkBranchResponse(
@@ -68,3 +69,4 @@ class BranchService:
         date_part = datetime.now(UTC).strftime("%Y%m%d")
         suffix = secrets.token_hex(3)
         return f"{self.settings.write_branch_prefix}{slug}-{date_part}-{suffix}"
+

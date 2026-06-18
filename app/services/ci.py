@@ -8,7 +8,7 @@ from typing import Any
 from app.ci.logs import parse_failed_log
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.ci import (
     ActionCache,
     Annotation,
@@ -50,7 +50,7 @@ from app.storage.audit import AuditStore, canonical_hash
 
 
 class CIService:
-    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
+    def __init__(self, github: GiteaClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
         self.github = github
         self.policy = policy
         self.settings = settings
@@ -135,13 +135,14 @@ class CIService:
 
         await self.github.get_workflow(owner, repo, request.workflow_id)
         created_after = _utc_now_iso()
-        await self.github.dispatch_workflow(owner, repo, request.workflow_id, ref=ref, inputs=request.inputs or None)
+        dispatch_result = await self.github.dispatch_workflow(owner, repo, request.workflow_id, ref=ref, inputs=request.inputs or None)
         response = DispatchWorkflowResponse(
             workflow_id=request.workflow_id,
             ref=ref,
             accepted=True,
             created_after=created_after,
             query_hint=self._dispatch_query_hint(request.workflow_id, ref, created_after),
+            warning=_dispatch_warning(dispatch_result),
         )
         if request.idempotency_key and self.audit:
             self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
@@ -419,7 +420,7 @@ class CIService:
                 selected_count=0,
                 deleted_count=0,
                 requested_caches=[cache],
-                warning="Dry run only; requested cache_id was not verified against GitHub. Use listCaches to inspect metadata before deleting.",
+                warning="Dry run only; requested cache_id was not verified against Gitea. Use listCaches to inspect metadata before deleting when the Gitea API supports caches.",
             )
 
         self._assert_cache_delete_confirmed(request, by_cache_id=True)
@@ -427,7 +428,7 @@ class CIService:
         try:
             await self.github.delete_actions_cache(owner, repo, cache_id)
         except ApiError as exc:
-            if exc.error_code == ErrorCode.GITHUB_NOT_FOUND:
+            if exc.error_code in {str(ErrorCode.GITEA_NOT_FOUND), str(ErrorCode.GITHUB_NOT_FOUND)}:
                 return DeleteCacheResponse(
                     deleted=False,
                     dry_run=False,
@@ -435,7 +436,7 @@ class CIService:
                     selected_count=0,
                     deleted_count=0,
                     requested_caches=[cache],
-                    warning="GitHub reported that the cache_id was not found; no cache was deleted.",
+                    warning="Gitea reported that the cache_id was not found; no cache was deleted.",
                 )
             raise
 
@@ -662,5 +663,12 @@ def _extract_step_log(raw_log: str, step_name: str) -> str:
     end = min(matches[-1] + 80, len(lines))
     return "\n".join(lines[start:end])
 
+
+def _dispatch_warning(dispatch_result: Any) -> str | None:
+    if isinstance(dispatch_result, dict) and dispatch_result.get("workflow_run_id"):
+        return None
+    return "Gitea workflow dispatch may not expose the new run immediately in list queries."
+
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+

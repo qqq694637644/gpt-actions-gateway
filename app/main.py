@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.api.routes import router as gateway_router
 from app.config.settings import get_settings
 from app.errors import register_exception_handlers
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.policy.rules import Policy
 from app.storage.audit import AuditStore
 from app.workspace.manager import WorkspaceManager
@@ -18,7 +18,7 @@ from app.workspace.manager import WorkspaceManager
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    github = GitHubClient(settings)
+    gitea = GiteaClient(settings)
     policy = Policy(settings)
     audit = AuditStore(settings.audit_db_url)
 
@@ -27,24 +27,25 @@ def create_app() -> FastAPI:
         try:
             yield
         finally:
-            await github.aclose()
+            await gitea.aclose()
             audit.close()
 
     app = FastAPI(
-        title="GPT Actions GitHub Gateway v2",
+        title="GPT Actions Gitea Gateway v2",
         version="2.0.0",
         description=(
-            "Workspace-first GitHub maintenance gateway for GPT Actions. "
+            "Workspace-first Gitea maintenance gateway for GPT Actions. "
             "All code reading, editing, testing, committing, and pushing flows through backend Git workspaces."
         ),
         servers=[{"url": settings.public_base_url.rstrip("/")}],
         lifespan=lifespan,
     )
     app.state.settings = settings
-    app.state.github = github
+    app.state.gitea = gitea
+    app.state.github = gitea
     app.state.policy = policy
     app.state.audit = audit
-    app.state.workspace_manager = WorkspaceManager(settings, github, policy)
+    app.state.workspace_manager = WorkspaceManager(settings, gitea, policy)
 
     register_exception_handlers(app)
     app.include_router(gateway_router)
@@ -97,3 +98,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+

@@ -261,7 +261,7 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
     assert default_dry_run.selected_count == 0
     assert default_dry_run.requested_caches[0].cache_id == 101
     assert default_dry_run.selected_caches == []
-    assert default_dry_run.warning == "Dry run only; requested cache_id was not verified against GitHub. Use listCaches to inspect metadata before deleting."
+    assert default_dry_run.warning == "Dry run only; requested cache_id was not verified against Gitea. Use listCaches to inspect metadata before deleting when the Gitea API supports caches."
     assert github.cache_list_calls == []
     assert github.deleted_caches == []
     assert missing.requested_count == 1

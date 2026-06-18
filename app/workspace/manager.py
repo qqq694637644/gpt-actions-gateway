@@ -14,7 +14,7 @@ from pathlib import Path
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.common import ChangedFile
 from app.policy.rules import Policy, is_sha
 from app.workspace.git import GitRunner, attach_numstat, normalize_git_paths, parse_numstat, parse_porcelain_z
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class WorkspaceManager:
-    def __init__(self, settings: Settings, github: GitHubClient, policy: Policy) -> None:
+    def __init__(self, settings: Settings, github: GiteaClient, policy: Policy) -> None:
         self.settings = settings
         self.github = github
         self.policy = policy
@@ -119,7 +119,7 @@ class WorkspaceManager:
                 raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Workspaces can only be prepared from same-repository PR heads.", status_code=403)
             branch = (source_pr.get("head") or {}).get("ref")
             if not branch:
-                raise ApiError(ErrorCode.GITHUB_ERROR, "PR head branch was missing from GitHub response.", status_code=502)
+                raise ApiError(ErrorCode.GITEA_ERROR, "PR head branch was missing from Gitea response.", status_code=502)
         writable = branch is not None
         if writable:
             self.policy.assert_write_branch_allowed(branch)
@@ -651,3 +651,4 @@ def gitignore_contains_entry(text: str, entry: str) -> bool:
 
 def command_hash(script: str) -> str:
     return hashlib.sha256(script.encode("utf-8")).hexdigest()
+

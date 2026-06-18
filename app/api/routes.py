@@ -8,7 +8,7 @@ from app.api.deps import audit_store, github_client, policy, workspace_manager
 from app.auth.dependencies import require_auth
 from app.config.settings import Settings, get_settings
 from app.errors import ErrorResponse
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.branches import CreateWorkBranchRequest, CreateWorkBranchResponse
 from app.models.ci import (
     CIStatusQueryRequest,
@@ -107,7 +107,7 @@ async def prepare_workspace(
     owner: str,
     repo: str,
     request: PrepareWorkspaceRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -122,7 +122,7 @@ async def workspace_exec_pwsh(
     repo: str,
     workspace_id: str,
     request: WorkspaceExecPwshRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -137,7 +137,7 @@ async def workspace_status(
     repo: str,
     workspace_id: str,
     request: WorkspaceStatusRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -152,7 +152,7 @@ async def workspace_diff(
     repo: str,
     workspace_id: str,
     request: WorkspaceDiffRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -167,7 +167,7 @@ async def workspace_apply_patch(
     repo: str,
     workspace_id: str,
     request: WorkspaceApplyPatchRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -182,7 +182,7 @@ async def workspace_write_file(
     repo: str,
     workspace_id: str,
     request: WorkspaceWriteFileRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -197,7 +197,7 @@ async def workspace_commit_and_push(
     repo: str,
     workspace_id: str,
     request: WorkspaceCommitAndPushRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -212,7 +212,7 @@ async def workspace_reset(
     repo: str,
     workspace_id: str,
     request: WorkspaceResetRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -226,7 +226,7 @@ async def create_work_branch(
     owner: str,
     repo: str,
     request: CreateWorkBranchRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     audit: Annotated[AuditStore, Depends(audit_store)],
@@ -235,46 +235,46 @@ async def create_work_branch(
 
 
 @router.post("/pulls/create", operation_id="createPullRequest", summary="Create or reuse an open pull request", response_model=CreatePullRequestResponse)
-async def create_pull_request(owner: str, repo: str, request: CreatePullRequestRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> CreatePullRequestResponse:
+async def create_pull_request(owner: str, repo: str, request: CreatePullRequestRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> CreatePullRequestResponse:
     return await PullRequestService(github, pol).create_pull_request(owner, repo, request)
 
 
 @router.post("/pulls/get", operation_id="getPullRequest", summary="Get pull request details", response_model=GetPullRequestResponse)
-async def get_pull_request(owner: str, repo: str, request: GetPullRequestRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> GetPullRequestResponse:
+async def get_pull_request(owner: str, repo: str, request: GetPullRequestRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> GetPullRequestResponse:
     return await PullRequestService(github, pol).get_pull_request(owner, repo, request)
 
 
 @router.post("/pulls/list", operation_id="listPullRequests", summary="List pull requests", response_model=ListPullRequestsResponse)
-async def list_pull_requests(owner: str, repo: str, request: ListPullRequestsRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> ListPullRequestsResponse:
+async def list_pull_requests(owner: str, repo: str, request: ListPullRequestsRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> ListPullRequestsResponse:
     return await PullRequestService(github, pol).list_pull_requests(owner, repo, request)
 
 
 @router.post("/pulls/files", operation_id="getPullRequestFiles", summary="List pull request changed files", response_model=PullRequestFilesResponse)
-async def get_pull_request_files(owner: str, repo: str, request: PullRequestFilesRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> PullRequestFilesResponse:
+async def get_pull_request_files(owner: str, repo: str, request: PullRequestFilesRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> PullRequestFilesResponse:
     return await PullRequestService(github, pol).get_pull_request_files(owner, repo, request)
 
 
 @router.post("/pulls/update", operation_id="updatePullRequest", summary="Update pull request title/body/state/base", response_model=UpdatePullRequestResponse)
-async def update_pull_request(owner: str, repo: str, request: UpdatePullRequestRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> UpdatePullRequestResponse:
+async def update_pull_request(owner: str, repo: str, request: UpdatePullRequestRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> UpdatePullRequestResponse:
     return await PullRequestService(github, pol).update_pull_request(owner, repo, request)
 
 
 @router.post("/pulls/merge", operation_id="mergePullRequest", summary="Merge a pull request", response_model=MergePullRequestResponse)
-async def merge_pull_request(owner: str, repo: str, request: MergePullRequestRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> MergePullRequestResponse:
+async def merge_pull_request(owner: str, repo: str, request: MergePullRequestRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> MergePullRequestResponse:
     return await PullRequestService(github, pol).merge_pull_request(owner, repo, request)
 
 
 @router.post("/pulls/comment", operation_id="commentPullRequest", summary="Comment on a pull request", response_model=CommentPullRequestResponse)
-async def comment_pull_request(owner: str, repo: str, request: CommentPullRequestRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> CommentPullRequestResponse:
+async def comment_pull_request(owner: str, repo: str, request: CommentPullRequestRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)]) -> CommentPullRequestResponse:
     return await PullRequestService(github, pol).comment_pull_request(owner, repo, request)
 
 
-@router.post("/ci/status/query", operation_id="queryCiStatus", summary="Query GitHub Actions status", response_model=CIStatusResponse)
+@router.post("/ci/status/query", operation_id="queryCiStatus", summary="Query Gitea Actions status", response_model=CIStatusResponse)
 async def query_ci_status(
     owner: str,
     repo: str,
     request: CIStatusQueryRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> CIStatusResponse:
@@ -286,7 +286,7 @@ async def dispatch_workflow(
     owner: str,
     repo: str,
     request: DispatchWorkflowRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     audit: Annotated[AuditStore, Depends(audit_store)],
@@ -295,12 +295,12 @@ async def dispatch_workflow(
 
 
 @router.post("/ci/failed-log/query", operation_id="queryFailedCiLog", summary="Read failed CI log summary", response_model=FailedCILogResponse)
-async def query_failed_ci_log(owner: str, repo: str, request: FailedLogQueryRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> FailedCILogResponse:
+async def query_failed_ci_log(owner: str, repo: str, request: FailedLogQueryRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> FailedCILogResponse:
     return await CIService(github, pol, settings).get_failed_ci_log(owner, repo, request)
 
 
 @router.post("/ci/runs/get", operation_id="getCiRun", summary="Get a workflow run", response_model=GetCiRunResponse)
-async def get_ci_run(owner: str, repo: str, request: GetCiRunRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiRunResponse:
+async def get_ci_run(owner: str, repo: str, request: GetCiRunRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiRunResponse:
     return await CIService(github, pol, settings).get_ci_run(owner, repo, request)
 
 
@@ -309,7 +309,7 @@ async def rerun_workflow_run(
     owner: str,
     repo: str,
     request: RerunWorkflowRunRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     audit: Annotated[AuditStore, Depends(audit_store)],
@@ -318,7 +318,7 @@ async def rerun_workflow_run(
 
 
 @router.post("/ci/jobs/list", operation_id="getCiJobs", summary="List jobs for a workflow run", response_model=GetCiJobsResponse)
-async def get_ci_jobs(owner: str, repo: str, request: GetCiJobsRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiJobsResponse:
+async def get_ci_jobs(owner: str, repo: str, request: GetCiJobsRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> GetCiJobsResponse:
     return await CIService(github, pol, settings).get_ci_jobs(owner, repo, request)
 
 
@@ -327,7 +327,7 @@ async def rerun_workflow_job(
     owner: str,
     repo: str,
     request: RerunWorkflowJobRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     audit: Annotated[AuditStore, Depends(audit_store)],
@@ -336,17 +336,17 @@ async def rerun_workflow_job(
 
 
 @router.post("/ci/jobs/log", operation_id="getJobLog", summary="Read a workflow job log", response_model=JobLogResponse)
-async def get_job_log(owner: str, repo: str, request: GetJobLogRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> JobLogResponse:
+async def get_job_log(owner: str, repo: str, request: GetJobLogRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> JobLogResponse:
     return await CIService(github, pol, settings).get_job_log(owner, repo, request)
 
 
 @router.post("/ci/runs/log", operation_id="getRunLog", summary="Read workflow run log archive text files", response_model=RunLogResponse)
-async def get_run_log(owner: str, repo: str, request: GetRunLogRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> RunLogResponse:
+async def get_run_log(owner: str, repo: str, request: GetRunLogRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> RunLogResponse:
     return await CIService(github, pol, settings).get_run_log(owner, repo, request)
 
 
 @router.post("/ci/artifacts/list", operation_id="listArtifacts", summary="List workflow run artifacts", response_model=ListArtifactsResponse)
-async def list_artifacts(owner: str, repo: str, request: ListArtifactsRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ListArtifactsResponse:
+async def list_artifacts(owner: str, repo: str, request: ListArtifactsRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ListArtifactsResponse:
     return await CIService(github, pol, settings).list_artifacts(owner, repo, request)
 
 
@@ -361,7 +361,7 @@ async def sync_run_artifacts_to_workspace(
     repo: str,
     workspace_id: str,
     request: SyncRunArtifactsToWorkspaceRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     manager: Annotated[WorkspaceManager, Depends(workspace_manager)],
@@ -369,19 +369,20 @@ async def sync_run_artifacts_to_workspace(
 ) -> SyncRunArtifactsToWorkspaceResponse:
     return await WorkspaceService(github, pol, settings, manager, audit).sync_run_artifacts_to_workspace(owner, repo, workspace_id, request)
 
-@router.post("/ci/caches/list", operation_id="listCaches", summary="List GitHub Actions caches", response_model=ListCachesResponse)
-async def list_caches(owner: str, repo: str, request: ListCachesRequest, github: Annotated[GitHubClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ListCachesResponse:
+@router.post("/ci/caches/list", operation_id="listCaches", summary="List Actions caches when the Gitea API supports them", response_model=ListCachesResponse)
+async def list_caches(owner: str, repo: str, request: ListCachesRequest, github: Annotated[GiteaClient, Depends(github_client)], pol: Annotated[Policy, Depends(policy)], settings: Annotated[Settings, Depends(get_settings)]) -> ListCachesResponse:
     return await CIService(github, pol, settings).list_caches(owner, repo, request)
 
 
-@router.post("/ci/caches/delete", operation_id="deleteCache", summary="Delete a GitHub Actions cache by id or key", response_model=DeleteCacheResponse)
+@router.post("/ci/caches/delete", operation_id="deleteCache", summary="Delete an Actions cache when the Gitea API supports it", response_model=DeleteCacheResponse)
 async def delete_cache(
     owner: str,
     repo: str,
     request: DeleteCacheRequest,
-    github: Annotated[GitHubClient, Depends(github_client)],
+    github: Annotated[GiteaClient, Depends(github_client)],
     pol: Annotated[Policy, Depends(policy)],
     settings: Annotated[Settings, Depends(get_settings)],
     audit: Annotated[AuditStore, Depends(audit_store)],
 ) -> DeleteCacheResponse:
     return await CIService(github, pol, settings, audit).delete_cache(owner, repo, request)
+
