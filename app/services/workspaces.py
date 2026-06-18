@@ -514,15 +514,15 @@ class WorkspaceService:
                     destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
                     archive_data = await self.forge.download_artifact(owner, repo, artifact_id)
                     remote_digest = item.get("remote_digest")
-                    computed_digest = _verified_or_computed_artifact_digest(archive_data, remote_digest)
+                    computed_archive_sha256 = _verified_or_computed_artifact_digest(archive_data, remote_digest)
                     file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
                     artifacts.append(
                         SyncedRunArtifact(
                             artifact_id=artifact_id,
                             name=name,
-                            digest=computed_digest,
+                            digest=computed_archive_sha256,
                             remote_digest=remote_digest,
-                            computed_archive_sha256=computed_digest,
+                            computed_archive_sha256=computed_archive_sha256,
                             destination_dir=_relative_repo_path(repo_dir, destination),
                             file_count=file_count,
                             bytes_written=bytes_written,
@@ -818,7 +818,7 @@ def _verified_or_computed_artifact_digest(data: bytes, digest: Any) -> str:
             status_code=502,
             details={"expected_digest": digest, "actual_digest": actual},
         )
-    return digest.strip()
+    return actual
 
 
 def _safe_zip_member_path(filename: str) -> PurePosixPath:

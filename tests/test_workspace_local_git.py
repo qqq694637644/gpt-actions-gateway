@@ -239,8 +239,14 @@ def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_p
     assert first.gitignore_path == ".git/info/exclude"
     assert first.gitignore_updated is True
     assert first.artifacts[0].destination_dir == ".gpt-artifacts/runs/77/55-reports"
+    assert first.artifacts[0].digest == artifact_digest(github.artifact_zip)
+    assert first.artifacts[0].remote_digest == artifact_digest(github.artifact_zip)
+    assert first.artifacts[0].computed_archive_sha256 == artifact_digest(github.artifact_zip)
     assert (repo_dir / first.artifacts[0].destination_dir / "junit.xml").read_text(encoding="utf-8").startswith("<testsuite")
-    assert json.loads((repo_dir / first.manifest_path).read_text(encoding="utf-8"))["remote_fingerprint"] == first.remote_fingerprint
+    manifest = json.loads((repo_dir / first.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["remote_fingerprint"] == first.remote_fingerprint
+    assert manifest["artifacts"][0]["remote_digest"] == artifact_digest(github.artifact_zip)
+    assert manifest["artifacts"][0]["computed_archive_sha256"] == artifact_digest(github.artifact_zip)
     assert ".gpt-artifacts/" in (repo_dir / ".git" / "info" / "exclude").read_text(encoding="utf-8")
     assert ".gpt-artifacts" not in git("status", "--porcelain=v1", "--untracked-files=all", cwd=repo_dir)
     status = run(service.status("acme", "demo", prepared.workspace_id, WorkspaceStatusRequest()))

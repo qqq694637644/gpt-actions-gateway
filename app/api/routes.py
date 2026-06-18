@@ -90,6 +90,7 @@ _error_responses = {
     413: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
     500: {"model": ErrorResponse},
+    501: {"model": ErrorResponse},
     502: {"model": ErrorResponse},
     507: {"model": ErrorResponse},
 }
