@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -53,18 +52,6 @@ class Settings(BaseSettings):
     gitea_use_env_proxy: bool = False
     gitea_token: str | None = None
     gitea_git_username: str | None = None
-
-    # Deprecated GitHub settings are kept only as compatibility fallbacks for
-    # existing deployments while the gateway migrates to Gitea.
-    github_auth_mode: Literal["pat", "github_app"] = "pat"
-    github_api_base_url: str = "https://api.github.com"
-    github_api_version: str = "2026-03-10"
-    github_use_env_proxy: bool = False
-    github_token: str | None = None
-    github_git_username: str | None = None
-    github_app_id: str | None = None
-    github_app_private_key: str | None = None
-    github_installation_id: str | None = None
 
     allowed_repos: str = ""
     allow_all_repos: bool = False
@@ -162,11 +149,11 @@ class Settings(BaseSettings):
 
     @property
     def effective_gitea_token(self) -> str | None:
-        return self.gitea_token or self.github_token
+        return self.gitea_token
 
     @property
     def effective_gitea_git_username(self) -> str | None:
-        return self.gitea_git_username or self.github_git_username
+        return self.gitea_git_username
 
 
 

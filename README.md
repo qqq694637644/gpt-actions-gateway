@@ -16,7 +16,7 @@ Key API differences handled by the gateway:
 - Gitea artifact metadata may not include a remote digest. The gateway still validates zip paths and records a computed `sha256:` digest after download.
 - The inspected Gitea API spec does not expose GitHub-compatible Actions cache list/delete endpoints. `listCaches` and `deleteCache` are kept for schema compatibility, but the service checks Gitea capabilities first and returns a clear unsupported error instead of running the normal cache business flow.
 
-The old `app.github.*` modules are compatibility shims that import the new `app.gitea.*` implementation. Prefer `GITEA_*` settings for new deployments.
+This migration is intentionally breaking at the internal integration boundary: use `app.gitea.*` modules and `GITEA_*` settings directly. The old `app.github.*` compatibility shims and `GITHUB_*` token/username fallbacks have been removed so missing Gitea configuration fails early during development and deployment.
 
 ## Configuration
 
@@ -38,7 +38,7 @@ DEFAULT_BASE_BRANCH=main
 
 `GITEA_API_BASE_URL` must include the `/api/v1` suffix. The gateway derives HTTPS Git remotes and commit URLs by stripping that suffix.
 
-Deprecated `GITHUB_TOKEN` and `GITHUB_GIT_USERNAME` are accepted only as migration fallbacks when the new Gitea variables are not set. GitHub App authentication is not supported for Gitea.
+`GITEA_TOKEN` and `GITEA_GIT_USERNAME` are required. Deprecated `GITHUB_*` token/username variables and GitHub App authentication are not supported for Gitea.
 
 ## Safety model
 
@@ -46,7 +46,7 @@ The gateway enforces repository and path policy before touching a workspace or r
 
 - Configure `ALLOWED_REPOS` unless `ALLOW_ALL_REPOS=true` is explicitly reviewed.
 - Writes are expected on task branches, normally under the `gpt/` prefix.
-- Workflow edits under `.gitea/workflows/*` and `.github/workflows/*` require `ALLOW_WORKFLOW_EDIT=true`.
+- Workflow edits under `.gitea/workflows/*` require `ALLOW_WORKFLOW_EDIT=true`; legacy `.github/workflows/*` edits are blocked by the Gitea gateway policy.
 - Secret files, dependency directories, generated directories, local virtualenvs, and binary-like files are blocked by policy.
 - `workspaceExecPwsh` runs inside the repository, blocks credential/environment enumeration, and only allows network access when both the request and server configuration allow it.
 - `.gpt-artifacts/` is added to `.git/info/exclude` when artifacts are synced into a workspace, so synced artifacts remain local and are not committed.

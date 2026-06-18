@@ -18,7 +18,7 @@ from app.services.pulls import PullRequestService
 def pr_payload(number: int = 7) -> dict:
     return {
         "number": number,
-        "html_url": f"https://github.test/acme/demo/pull/{number}",
+        "html_url": f"https://gitea.test/acme/demo/pull/{number}",
         "state": "open",
         "title": "Fix CI",
         "body": "body",
@@ -32,7 +32,7 @@ def pr_payload(number: int = 7) -> dict:
     }
 
 
-class PullGitHubStub:
+class PullGiteaStub:
     def __init__(self) -> None:
         self.created: dict | None = None
         self.updated: dict | None = None
@@ -75,17 +75,17 @@ class PullGitHubStub:
 
     async def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> dict:
         self.comments.append(body)
-        return {"id": 99, "html_url": "https://github.test/comment/99", "body": body}
+        return {"id": 99, "html_url": "https://gitea.test/comment/99", "body": body}
 
 
-def make_service(github: PullGitHubStub) -> PullRequestService:
+def make_service(forge: PullGiteaStub) -> PullRequestService:
     settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo")
-    return PullRequestService(github, Policy(settings))
+    return PullRequestService(forge, Policy(settings))
 
 
 def test_pull_request_query_and_files() -> None:
-    github = PullGitHubStub()
-    service = make_service(github)
+    forge = PullGiteaStub()
+    service = make_service(forge)
 
     pr = asyncio.run(service.get_pull_request("acme", "demo", GetPullRequestRequest(pr_number=7)))
     prs = asyncio.run(service.list_pull_requests("acme", "demo", ListPullRequestsRequest(head_branch="gpt/fix", base_branch="main")))
@@ -97,8 +97,8 @@ def test_pull_request_query_and_files() -> None:
 
 
 def test_create_pull_request_can_target_gpt_base_branch() -> None:
-    github = PullGitHubStub()
-    service = make_service(github)
+    forge = PullGiteaStub()
+    service = make_service(forge)
 
     response = asyncio.run(
         service.create_pull_request(
@@ -111,12 +111,12 @@ def test_create_pull_request_can_target_gpt_base_branch() -> None:
     assert response.pr_number == 8
     assert response.head_branch == "gpt/child"
     assert response.base_branch == "gpt/parent"
-    assert github.created == {"head": "gpt/child", "base": "gpt/parent", "title": "Follow up", "body": "Stacked PR"}
+    assert forge.created == {"head": "gpt/child", "base": "gpt/parent", "title": "Follow up", "body": "Stacked PR"}
 
 
 def test_create_pull_request_can_target_arbitrary_base_branch() -> None:
-    github = PullGitHubStub()
-    service = make_service(github)
+    forge = PullGiteaStub()
+    service = make_service(forge)
 
     response = asyncio.run(
         service.create_pull_request(
@@ -129,12 +129,12 @@ def test_create_pull_request_can_target_arbitrary_base_branch() -> None:
     assert response.pr_number == 8
     assert response.head_branch == "gpt/child"
     assert response.base_branch == "feature/parent"
-    assert github.created == {"head": "gpt/child", "base": "feature/parent", "title": "Follow up", "body": "Stacked PR"}
+    assert forge.created == {"head": "gpt/child", "base": "feature/parent", "title": "Follow up", "body": "Stacked PR"}
 
 
 def test_create_pull_request_can_use_arbitrary_head_branch() -> None:
-    github = PullGitHubStub()
-    service = make_service(github)
+    forge = PullGiteaStub()
+    service = make_service(forge)
 
     response = asyncio.run(
         service.create_pull_request(
@@ -147,12 +147,12 @@ def test_create_pull_request_can_use_arbitrary_head_branch() -> None:
     assert response.pr_number == 8
     assert response.head_branch == "feature/direct-maintenance"
     assert response.base_branch == "main"
-    assert github.created == {"head": "feature/direct-maintenance", "base": "main", "title": "Follow up", "body": "Stacked PR"}
+    assert forge.created == {"head": "feature/direct-maintenance", "base": "main", "title": "Follow up", "body": "Stacked PR"}
 
 
 def test_pull_request_update_and_comment() -> None:
-    github = PullGitHubStub()
-    service = make_service(github)
+    forge = PullGiteaStub()
+    service = make_service(forge)
 
     updated = asyncio.run(service.update_pull_request("acme", "demo", UpdatePullRequestRequest(pr_number=7, title="New title", body="New body", base_branch="gpt/parent")))
     comment = asyncio.run(service.comment_pull_request("acme", "demo", CommentPullRequestRequest(pr_number=7, body="CI fixed")))
@@ -160,4 +160,4 @@ def test_pull_request_update_and_comment() -> None:
     assert updated.pull_request.title == "New title"
     assert updated.pull_request.base_branch == "gpt/parent"
     assert comment.comment_id == 99
-    assert github.comments == ["CI fixed"]
+    assert forge.comments == ["CI fixed"]

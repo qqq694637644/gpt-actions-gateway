@@ -430,7 +430,7 @@ class CIService:
         try:
             await self.forge.delete_actions_cache(owner, repo, cache_id)
         except ApiError as exc:
-            if exc.error_code in {str(ErrorCode.GITEA_NOT_FOUND), str(ErrorCode.GITHUB_NOT_FOUND)}:
+            if exc.error_code == str(ErrorCode.GITEA_NOT_FOUND):
                 return DeleteCacheResponse(
                     deleted=False,
                     dry_run=False,

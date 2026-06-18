@@ -10,8 +10,8 @@ from app.errors import ApiError, ErrorCode
 BLOCKED_ALWAYS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bgit\s+push\b", re.IGNORECASE), "git push is only allowed through workspaceCommitAndPush."),
     (re.compile(r"\bgit\s+remote\s+set-url\b", re.IGNORECASE), "Changing git remotes is not allowed."),
-    (re.compile(r"\bgh\s+auth\b", re.IGNORECASE), "GitHub CLI authentication is not allowed."),
-    (re.compile(r"\bgh\s+secret\b", re.IGNORECASE), "GitHub secret operations are not allowed."),
+    (re.compile(r"\bgh\s+auth\b", re.IGNORECASE), "gh CLI authentication is not allowed."),
+    (re.compile(r"\bgh\s+secret\b", re.IGNORECASE), "gh secret operations are not allowed."),
     (re.compile(r"\bGet-ChildItem\s+Env:", re.IGNORECASE), "Enumerating process environment variables is not allowed."),
     (re.compile(r"\bGet-Content\s+\$env:", re.IGNORECASE), "Reading environment variables as files is not allowed."),
     (re.compile(r"\bssh\b", re.IGNORECASE), "ssh is not allowed from workspaceExecPwsh."),
@@ -27,12 +27,7 @@ NETWORK_BLOCKED: list[tuple[re.Pattern[str], str]] = [
 
 SENSITIVE_ENV_EXACT = {
     "GITEA_TOKEN",
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
-    "GITHUB_APP_PRIVATE_KEY",
     "GPT_ACTION_SECRET",
-    "GITHUB_APP_ID",
-    "GITHUB_INSTALLATION_ID",
 }
 SENSITIVE_ENV_FRAGMENTS = ("TOKEN", "SECRET", "PRIVATE_KEY", "PASSWORD", "CREDENTIAL")
 ENV_ALLOWLIST = {
@@ -87,9 +82,6 @@ def sanitized_environment(source: Mapping[str, str] | None = None) -> dict[str, 
             "GIT_TERMINAL_PROMPT": "0",
             "GCM_INTERACTIVE": "Never",
             "GITEA_TOKEN": "",
-            "GITHUB_TOKEN": "",
-            "GH_TOKEN": "",
-            "GITHUB_APP_PRIVATE_KEY": "",
             "GPT_ACTION_SECRET": "",
         }
     )

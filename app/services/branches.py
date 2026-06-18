@@ -36,8 +36,7 @@ class BranchService:
             await self.forge.create_ref(owner, repo, branch, base_sha)
             response = CreateWorkBranchResponse(branch=branch, base_ref=base_ref, base_sha=base_sha, head_sha=base_sha, created=True)
         except ApiError as exc:
-            conflict_codes = {str(ErrorCode.GITEA_CONFLICT), str(ErrorCode.GITHUB_CONFLICT)}
-            if exc.error_code not in conflict_codes or not request.continue_if_exists:
+            if exc.error_code != str(ErrorCode.GITEA_CONFLICT) or not request.continue_if_exists:
                 raise
             head_sha = await self.forge.get_branch_head(owner, repo, branch)
             response = CreateWorkBranchResponse(

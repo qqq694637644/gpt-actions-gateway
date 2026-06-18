@@ -34,8 +34,9 @@ DENY_WRITE_PATTERNS = [
     "build/**",
     "coverage/**",
     ".git/**",
+    ".github/workflows/**",
 ]
-WORKFLOW_PATTERNS = [".gitea/workflows/*", ".github/workflows/*"]
+WORKFLOW_PATTERNS = [".gitea/workflows/*"]
 LOCAL_ENV_DIRS = {".venv", "venv", "env", "myvenv", ".tox", ".nox"}
 DENY_WRITE_DIRS = {".git", "dist", "build", "node_modules", "vendor", ".next", ".turbo", "coverage", *LOCAL_ENV_DIRS}
 BINARY_DENY_EXTENSIONS = {
