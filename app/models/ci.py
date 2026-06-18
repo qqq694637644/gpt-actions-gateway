@@ -284,6 +284,8 @@ class SyncedRunArtifact(GatewayBaseModel):
     artifact_id: int
     name: str
     digest: str
+    remote_digest: str | None = None
+    computed_archive_sha256: str | None = None
     destination_dir: str
     file_count: int
     bytes_written: int

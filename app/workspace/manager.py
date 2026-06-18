@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 class WorkspaceManager:
-    def __init__(self, settings: Settings, github: GiteaClient, policy: Policy) -> None:
+    def __init__(self, settings: Settings, forge: GiteaClient, policy: Policy) -> None:
         self.settings = settings
-        self.github = github
+        self.forge = forge
         self.policy = policy
         self.root = Path(settings.workspace_root).resolve()
         self.mirror_root = Path(settings.workspace_mirror_root).resolve()
@@ -109,11 +109,11 @@ class WorkspaceManager:
         if sum(selected) != 1:
             raise ApiError(ErrorCode.VALIDATION_ERROR, "Provide exactly one of branch, source_pr_number, or base_ref.", status_code=422)
 
-        repository = await self.github.get_repository(owner, repo)
+        repository = await self.forge.get_repository(owner, repo)
         default_branch = repository.get("default_branch") or self.settings.default_base_branch
         source_pr = None
         if source_pr_number is not None:
-            source_pr = await self.github.get_pull_request(owner, repo, source_pr_number)
+            source_pr = await self.forge.get_pull_request(owner, repo, source_pr_number)
             head_repo = ((source_pr.get("head") or {}).get("repo") or {}).get("full_name", "").lower()
             if head_repo and head_repo != f"{owner}/{repo}".lower():
                 raise ApiError(ErrorCode.WORKSPACE_POLICY_VIOLATION, "Workspaces can only be prepared from same-repository PR heads.", status_code=403)
@@ -212,8 +212,8 @@ class WorkspaceManager:
     async def _ensure_mirror(self, owner: str, repo: str, *, refresh: bool) -> MirrorPrepareStats:
         mirror = self._mirror_path(owner, repo)
         mirror.parent.mkdir(parents=True, exist_ok=True)
-        remote_url = self.github.git_remote_url(owner, repo)
-        auth_config = await self.github.git_auth_config()
+        remote_url = self.forge.git_remote_url(owner, repo)
+        auth_config = await self.forge.git_auth_config()
         started = time.perf_counter()
         stage = "reuse"
         existed = mirror.exists()
@@ -331,10 +331,10 @@ class WorkspaceManager:
         exclude.write_text(text, encoding="utf-8")
 
     async def _ensure_origin(self, owner: str, repo: str, repo_dir: Path) -> None:
-        await self.git.run(["git", "remote", "set-url", "origin", self.github.git_remote_url(owner, repo)], cwd=repo_dir)
+        await self.git.run(["git", "remote", "set-url", "origin", self.forge.git_remote_url(owner, repo)], cwd=repo_dir)
 
     async def fetch_branch(self, repo_dir: Path, branch: str) -> None:
-        auth_config = await self.github.git_auth_config()
+        auth_config = await self.forge.git_auth_config()
         if is_sha(branch):
             await self.git.run(["git", *auth_config, "fetch", "origin", branch], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
         else:

@@ -41,8 +41,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.forge = gitea
     app.state.gitea = gitea
-    app.state.github = gitea
     app.state.policy = policy
     app.state.audit = audit
     app.state.workspace_manager = WorkspaceManager(settings, gitea, policy)

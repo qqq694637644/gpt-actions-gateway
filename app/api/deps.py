@@ -8,14 +8,14 @@ from app.storage.audit import AuditStore
 from app.workspace.manager import WorkspaceManager
 
 
+def forge_client(request: Request) -> GiteaClient:
+    return request.app.state.forge
+
+
 def gitea_client(request: Request) -> GiteaClient:
-    return request.app.state.gitea
+    """Compatibility dependency name for the current Gitea backend."""
 
-
-def github_client(request: Request) -> GiteaClient:
-    """Deprecated dependency name retained for unchanged route signatures."""
-
-    return gitea_client(request)
+    return forge_client(request)
 
 
 def policy(request: Request) -> Policy:

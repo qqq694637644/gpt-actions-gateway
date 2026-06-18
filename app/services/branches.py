@@ -12,8 +12,8 @@ from app.storage.audit import AuditStore
 
 
 class BranchService:
-    def __init__(self, github: GiteaClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
-        self.github = github
+    def __init__(self, forge: GiteaClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
+        self.forge = forge
         self.policy = policy
         self.settings = settings
         self.audit = audit
@@ -33,13 +33,13 @@ class BranchService:
         branch = request.branch if request.branch is not None else self._generate_branch_name(request.purpose_slug)
         self.policy.assert_write_branch_allowed(branch)
         try:
-            await self.github.create_ref(owner, repo, branch, base_sha)
+            await self.forge.create_ref(owner, repo, branch, base_sha)
             response = CreateWorkBranchResponse(branch=branch, base_ref=base_ref, base_sha=base_sha, head_sha=base_sha, created=True)
         except ApiError as exc:
             conflict_codes = {str(ErrorCode.GITEA_CONFLICT), str(ErrorCode.GITHUB_CONFLICT)}
             if exc.error_code not in conflict_codes or not request.continue_if_exists:
                 raise
-            head_sha = await self.github.get_branch_head(owner, repo, branch)
+            head_sha = await self.forge.get_branch_head(owner, repo, branch)
             response = CreateWorkBranchResponse(
                 branch=branch,
                 base_ref=base_ref,
@@ -55,13 +55,13 @@ class BranchService:
 
     async def _resolve_base(self, owner: str, repo: str, request: CreateWorkBranchRequest) -> tuple[str, str]:
         if request.base_sha:
-            await self.github.get_commit_object(owner, repo, request.base_sha)
+            await self.forge.get_commit_object(owner, repo, request.base_sha)
             return request.base_sha, request.base_sha
         base_ref = request.base_ref or self.settings.default_base_branch
         if is_sha(base_ref):
-            await self.github.get_commit_object(owner, repo, base_ref)
+            await self.forge.get_commit_object(owner, repo, base_ref)
             return base_ref, base_ref
-        base_sha = await self.github.get_branch_head(owner, repo, base_ref)
+        base_sha = await self.forge.get_branch_head(owner, repo, base_ref)
         return base_ref, base_sha
 
     def _generate_branch_name(self, purpose_slug: str) -> str:

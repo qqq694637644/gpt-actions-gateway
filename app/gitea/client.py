@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import re
 import zipfile
 from typing import Any
@@ -12,11 +13,13 @@ import httpx
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
 from app.gitea.auth import GiteaAuthProvider
+from app.gitea.capabilities import GiteaCapabilities
 
 
 class GiteaClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.capabilities = GiteaCapabilities()
         self._client = httpx.AsyncClient(
             base_url=settings.effective_gitea_api_base_url.rstrip("/"),
             timeout=httpx.Timeout(settings.request_timeout_seconds),
@@ -288,6 +291,7 @@ class GiteaClient:
     async def download_run_logs(self, owner: str, repo: str, run_id: int) -> bytes:
         jobs_payload = await self.list_jobs_for_run(owner, repo, run_id)
         jobs = jobs_payload.get("jobs", [])
+        failed_jobs: list[dict[str, Any]] = []
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
             for job in jobs:
@@ -296,8 +300,22 @@ class GiteaClient:
                 try:
                     log_text = await self.download_job_logs(owner, repo, job_id)
                 except ApiError as exc:
+                    if exc.error_code != str(ErrorCode.CI_LOG_NOT_READY):
+                        raise
+                    failed_jobs.append({"job_id": job_id, "job_name": job.get("name"), "error_code": exc.error_code, "message": exc.message})
                     log_text = f"Unable to download job log: {exc.message}\n"
                 archive.writestr(f"{job_id}-{name}.log", log_text)
+            archive.writestr(
+                "_gitea-log-manifest.json",
+                _json_dumps(
+                    {
+                        "complete": not failed_jobs,
+                        "run_id": run_id,
+                        "job_count": len(jobs),
+                        "failed_jobs": failed_jobs,
+                    }
+                ),
+            )
         return buffer.getvalue()
 
     async def list_artifacts_for_run(self, owner: str, repo: str, run_id: int, *, per_page: int = 100, page: int | None = None) -> dict[str, Any]:
@@ -350,3 +368,7 @@ def _gitea_list_params(params: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def _safe_log_name(name: str) -> str:
     return (re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-_") or "job")[:80]
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"

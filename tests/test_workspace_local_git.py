@@ -220,7 +220,7 @@ def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_p
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts")))
-    github = service.github  # type: ignore[attr-defined]
+    github = service.forge  # type: ignore[attr-defined]
 
     first = run(
         service.sync_run_artifacts_to_workspace(
@@ -269,7 +269,7 @@ def test_sync_run_artifacts_to_workspace_replaces_target_when_digest_changes(tmp
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_replace")))
-    github = service.github  # type: ignore[attr-defined]
+    github = service.forge  # type: ignore[attr-defined]
 
     first = run(
         service.sync_run_artifacts_to_workspace(
@@ -304,7 +304,7 @@ def test_sync_run_artifacts_to_workspace_computes_digest_when_gitea_metadata_omi
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_no_digest")))
-    github = service.github  # type: ignore[attr-defined]
+    github = service.forge  # type: ignore[attr-defined]
     github.artifact_digest = None
 
     response = run(
@@ -317,13 +317,28 @@ def test_sync_run_artifacts_to_workspace_computes_digest_when_gitea_metadata_omi
     )
 
     assert response.artifacts[0].digest == artifact_digest(github.artifact_zip)
+    assert response.artifacts[0].remote_digest is None
+    assert response.artifacts[0].computed_archive_sha256 == artifact_digest(github.artifact_zip)
+
+    second = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
+        )
+    )
+
+    assert second.downloaded is True
+    assert second.skipped is False
+    assert github.downloaded_artifacts == [55, 55]
 
 
 def test_sync_run_artifacts_to_workspace_rejects_unsupported_digest_format(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_bad_digest")))
-    service.github.artifact_digest = "sha256:not-hex"  # type: ignore[attr-defined]
+    service.forge.artifact_digest = "sha256:not-hex"  # type: ignore[attr-defined]
 
     with pytest.raises(ApiError) as exc:
         run(
@@ -343,7 +358,7 @@ def test_sync_run_artifacts_to_workspace_rejects_digest_mismatch(tmp_path: Path)
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_digest_mismatch")))
-    service.github.artifact_digest = artifact_digest(b"different archive bytes")  # type: ignore[attr-defined]
+    service.forge.artifact_digest = artifact_digest(b"different archive bytes")  # type: ignore[attr-defined]
 
     with pytest.raises(ApiError) as exc:
         run(

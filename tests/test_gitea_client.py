@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import zipfile
 
 import httpx
 import pytest
@@ -22,6 +24,8 @@ class Recorder:
         if request.content:
             self.bodies.append(json.loads(request.content.decode()))
         payload = self.payloads.get((request.method, request.url.path))
+        if isinstance(payload, httpx.Response):
+            return payload
         if payload is None:
             return httpx.Response(404, json={"message": f"not found: {request.method} {request.url.path}"})
         return httpx.Response(200, json=payload)
@@ -159,3 +163,48 @@ def test_gitea_actions_cache_api_is_reported_unsupported() -> None:
         assert raised.value.error_code == ErrorCode.GITEA_UNSUPPORTED
 
     run(scenario())
+
+
+def test_gitea_run_log_zip_includes_manifest_for_not_ready_job_logs() -> None:
+    async def scenario() -> tuple[bytes, Recorder]:
+        recorder = Recorder(
+            {
+                ("GET", "/api/v1/repos/acme/demo/actions/runs/77/jobs"): {
+                    "jobs": [
+                        {"id": 10, "name": "build"},
+                        {"id": 11, "name": "test"},
+                    ]
+                },
+                ("GET", "/api/v1/repos/acme/demo/actions/jobs/10/logs"): httpx.Response(200, text="build ok\n"),
+                ("GET", "/api/v1/repos/acme/demo/actions/jobs/11/logs"): httpx.Response(410, text="log not ready"),
+            }
+        )
+        client = await _client(recorder)
+        try:
+            archive_bytes = await client.download_run_logs("acme", "demo", 77)
+        finally:
+            await client.aclose()
+        return archive_bytes, recorder
+
+    archive_bytes, _ = run(scenario())
+
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        names = set(archive.namelist())
+        manifest = json.loads(archive.read("_gitea-log-manifest.json"))
+        failed_log = archive.read("11-test.log").decode()
+
+    assert "10-build.log" in names
+    assert manifest == {
+        "complete": False,
+        "failed_jobs": [
+            {
+                "error_code": ErrorCode.CI_LOG_NOT_READY,
+                "job_id": 11,
+                "job_name": "test",
+                "message": "Gitea Actions log is not ready or no longer available.",
+            }
+        ],
+        "job_count": 2,
+        "run_id": 77,
+    }
+    assert "Unable to download job log" in failed_log

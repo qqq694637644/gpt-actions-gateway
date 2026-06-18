@@ -14,7 +14,7 @@ Key API differences handled by the gateway:
 - Workflow dispatch requests `return_run_details=true` when Gitea supports returning run details.
 - Gitea does not expose a GitHub-compatible workflow run log archive endpoint, so `getRunLog` builds a zip archive from per-job logs.
 - Gitea artifact metadata may not include a remote digest. The gateway still validates zip paths and records a computed `sha256:` digest after download.
-- The inspected Gitea API spec does not expose GitHub-compatible Actions cache list/delete endpoints. `listCaches` and `deleteCache` are kept for schema compatibility but return a clear unsupported error with the Gitea client.
+- The inspected Gitea API spec does not expose GitHub-compatible Actions cache list/delete endpoints. `listCaches` and `deleteCache` are kept for schema compatibility, but the service checks Gitea capabilities first and returns a clear unsupported error instead of running the normal cache business flow.
 
 The old `app.github.*` modules are compatibility shims that import the new `app.gitea.*` implementation. Prefer `GITEA_*` settings for new deployments.
 
@@ -88,8 +88,8 @@ Gitea Actions and artifacts:
 - `getRunLog`
 - `listArtifacts`
 - `syncRunArtifactsToWorkspace`
-- `listCaches` (schema-compatible; unsupported by the inspected Gitea API)
-- `deleteCache` (schema-compatible; unsupported by the inspected Gitea API)
+- `listCaches` (schema-compatible; unsupported by the current Gitea backend)
+- `deleteCache` (schema-compatible; unsupported by the current Gitea backend)
 
 ## Development
 

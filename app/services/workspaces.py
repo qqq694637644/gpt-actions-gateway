@@ -57,8 +57,8 @@ _SAFE_ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class WorkspaceService:
-    def __init__(self, github: GiteaClient, policy: Policy, settings: Settings, manager: WorkspaceManager, audit: AuditStore) -> None:
-        self.github = github
+    def __init__(self, forge: GiteaClient, policy: Policy, settings: Settings, manager: WorkspaceManager, audit: AuditStore) -> None:
+        self.forge = forge
         self.policy = policy
         self.settings = settings
         self.manager = manager
@@ -362,7 +362,7 @@ class WorkspaceService:
                         dry_run=True,
                     )
                 else:
-                    auth_config = await self.github.git_auth_config()
+                    auth_config = await self.forge.git_auth_config()
                     push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
                     if push.exit_code != 0:
                         raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
@@ -420,7 +420,7 @@ class WorkspaceService:
                     await self.manager.git.run(["git", "config", "user.email", self.settings.workspace_git_user_email], cwd=repo_dir)
                     await self.manager.git.run(["git", "commit", "-m", request.commit_message], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
                     new_head = await self.manager.head_sha(repo_dir)
-                    auth_config = await self.github.git_auth_config()
+                    auth_config = await self.forge.git_auth_config()
                     push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
                     if push.exit_code != 0:
                         raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
@@ -478,7 +478,7 @@ class WorkspaceService:
         request: SyncRunArtifactsToWorkspaceRequest,
     ) -> SyncRunArtifactsToWorkspaceResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)
-        raw_run = await self.github.get_workflow_run(owner, repo, request.run_id)
+        raw_run = await self.forge.get_workflow_run(owner, repo, request.run_id)
         if raw_run.get("status") != "completed":
             raise ApiError(
                 ErrorCode.CI_LOG_NOT_READY,
@@ -501,7 +501,7 @@ class WorkspaceService:
         with self.manager.lock(workspace_id):
             gitignore_updated = _ensure_gpt_artifacts_local_exclude(repo_dir)
             existing_manifest = _read_artifact_manifest(manifest_path)
-            skipped = _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
+            skipped = _can_skip_artifact_sync(remote_artifacts) and _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
             if skipped:
                 artifacts = [SyncedRunArtifact(**item) for item in existing_manifest.get("artifacts", [])]
             else:
@@ -512,14 +512,17 @@ class WorkspaceService:
                     artifact_id = int(item["artifact_id"])
                     name = str(item["name"])
                     destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
-                    archive_data = await self.github.download_artifact(owner, repo, artifact_id)
-                    digest = _verified_or_computed_artifact_digest(archive_data, item.get("digest"))
+                    archive_data = await self.forge.download_artifact(owner, repo, artifact_id)
+                    remote_digest = item.get("remote_digest")
+                    computed_digest = _verified_or_computed_artifact_digest(archive_data, remote_digest)
                     file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
                     artifacts.append(
                         SyncedRunArtifact(
                             artifact_id=artifact_id,
                             name=name,
-                            digest=digest,
+                            digest=computed_digest,
+                            remote_digest=remote_digest,
+                            computed_archive_sha256=computed_digest,
                             destination_dir=_relative_repo_path(repo_dir, destination),
                             file_count=file_count,
                             bytes_written=bytes_written,
@@ -537,6 +540,7 @@ class WorkspaceService:
                         "conclusion": raw_run.get("conclusion"),
                         "run_url": raw_run.get("html_url"),
                         "remote_fingerprint": remote_fingerprint,
+                        "remote_metadata_fingerprint": remote_fingerprint,
                         "remote_artifacts": remote_artifacts,
                         "artifacts": [item.model_dump() for item in artifacts],
                         "synced_at": _utc_now_iso(),
@@ -578,7 +582,7 @@ class WorkspaceService:
         total_count = 0
         page = 1
         while True:
-            payload = await self.github.list_artifacts_for_run(owner, repo, run_id, per_page=_ARTIFACT_PAGE_SIZE, page=page)
+            payload = await self.forge.list_artifacts_for_run(owner, repo, run_id, per_page=_ARTIFACT_PAGE_SIZE, page=page)
             if page == 1:
                 total_count = int(payload.get("total_count") or 0)
             page_items = payload.get("artifacts", [])
@@ -639,10 +643,10 @@ class WorkspaceService:
         }
 
     def _commit_url(self, owner: str, repo: str, sha: str) -> str:
-        commit_url = getattr(self.github, "commit_url", None)
+        commit_url = getattr(self.forge, "commit_url", None)
         if callable(commit_url):
             return str(commit_url(owner, repo, sha))
-        remote = self.github.git_remote_url(owner, repo)
+        remote = self.forge.git_remote_url(owner, repo)
         return f"{remote.removesuffix('.git').rstrip('/')}/commit/{sha}"
 
 
@@ -659,6 +663,7 @@ def _artifact_manifest_records(raw_artifacts: list[dict[str, Any]]) -> list[dict
                 "artifact_id": int(artifact_id),
                 "name": name,
                 "digest": digest.strip() if isinstance(digest, str) and digest.strip() else None,
+                "remote_digest": digest.strip() if isinstance(digest, str) and digest.strip() else None,
                 "size_in_bytes": raw.get("size_in_bytes"),
                 "created_at": raw.get("created_at"),
                 "expires_at": raw.get("expires_at"),
@@ -689,6 +694,10 @@ def _artifact_fingerprint_inputs(artifacts: list[dict[str, Any]]) -> list[dict[s
             )
         inputs.append(entry)
     return inputs
+
+
+def _can_skip_artifact_sync(artifacts: list[dict[str, Any]]) -> bool:
+    return all(bool(item.get("remote_digest")) for item in artifacts)
 
 
 def _ensure_gpt_artifacts_local_exclude(repo_dir: Path) -> bool:

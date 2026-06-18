@@ -8,6 +8,7 @@ import pytest
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
+from app.gitea.capabilities import GiteaCapabilities
 from app.models.ci import (
     CIStatusQueryRequest,
     DeleteCacheRequest,
@@ -230,6 +231,22 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     assert delete.deleted is True and github.deleted_caches == [101]
     assert delete.selected_count == 1
     assert delete.selected_caches[0].cache_id == 101
+
+
+def test_actions_cache_capability_is_rejected_at_service_boundary() -> None:
+    forge = CIGitHubStub()
+    forge.capabilities = GiteaCapabilities()  # type: ignore[attr-defined]
+    service = make_service(forge)
+
+    with pytest.raises(ApiError) as listed:
+        asyncio.run(service.list_caches("acme", "demo", ListCachesRequest(key="ce-lib-")))
+    with pytest.raises(ApiError) as deleted:
+        asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101, dry_run=True)))
+
+    assert listed.value.error_code == ErrorCode.GITEA_UNSUPPORTED
+    assert deleted.value.error_code == ErrorCode.GITEA_UNSUPPORTED
+    assert forge.cache_list_calls == []
+    assert forge.deleted_caches == []
 
 
 def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
