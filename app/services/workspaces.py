@@ -498,54 +498,70 @@ class WorkspaceService:
         manifest_path_rel = _relative_repo_path(repo_dir, manifest_path)
         gitignore_path_rel = ".git/info/exclude"
 
+        artifacts: list[SyncedRunArtifact] = []
+        archive_payloads: list[tuple[dict[str, Any], bytes, str]] = []
+        gitignore_updated = False
+        skipped = False
+
         with self.manager.lock(workspace_id):
             gitignore_updated = _ensure_gpt_artifacts_local_exclude(repo_dir)
             existing_manifest = _read_artifact_manifest(manifest_path)
             skipped = _can_skip_artifact_sync(remote_artifacts) and _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
             if skipped:
                 artifacts = [SyncedRunArtifact(**item) for item in existing_manifest.get("artifacts", [])]
-            else:
-                _remove_existing_artifact_target(target_dir)
-                target_dir.mkdir(parents=True, exist_ok=True)
-                artifacts = []
-                for item in remote_artifacts:
-                    artifact_id = int(item["artifact_id"])
-                    name = str(item["name"])
-                    destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
-                    archive_data = await self.forge.download_artifact(owner, repo, artifact_id)
-                    remote_digest = item.get("remote_digest")
-                    computed_archive_sha256 = _verified_or_computed_artifact_digest(archive_data, remote_digest)
-                    file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
-                    artifacts.append(
-                        SyncedRunArtifact(
-                            artifact_id=artifact_id,
-                            name=name,
-                            digest=computed_archive_sha256,
-                            remote_digest=remote_digest,
-                            computed_archive_sha256=computed_archive_sha256,
-                            destination_dir=_relative_repo_path(repo_dir, destination),
-                            file_count=file_count,
-                            bytes_written=bytes_written,
+
+        if not skipped:
+            for item in remote_artifacts:
+                artifact_id = int(item["artifact_id"])
+                archive_data = await self.forge.download_artifact(owner, repo, artifact_id)
+                computed_archive_sha256 = _verified_or_computed_artifact_digest(archive_data, item.get("remote_digest"))
+                archive_payloads.append((item, archive_data, computed_archive_sha256))
+
+            with self.manager.lock(workspace_id):
+                existing_manifest = _read_artifact_manifest(manifest_path)
+                skipped = _can_skip_artifact_sync(remote_artifacts) and _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
+                if skipped:
+                    artifacts = [SyncedRunArtifact(**item) for item in existing_manifest.get("artifacts", [])]
+                else:
+                    _remove_existing_artifact_target(target_dir)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    artifacts = []
+                    for item, archive_data, computed_archive_sha256 in archive_payloads:
+                        artifact_id = int(item["artifact_id"])
+                        name = str(item["name"])
+                        destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
+                        file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
+                        remote_digest = item.get("remote_digest")
+                        artifacts.append(
+                            SyncedRunArtifact(
+                                artifact_id=artifact_id,
+                                name=name,
+                                digest=computed_archive_sha256,
+                                remote_digest=remote_digest,
+                                computed_archive_sha256=computed_archive_sha256,
+                                destination_dir=_relative_repo_path(repo_dir, destination),
+                                file_count=file_count,
+                                bytes_written=bytes_written,
+                            )
                         )
+                    _write_artifact_manifest(
+                        manifest_path,
+                        {
+                            "run_id": request.run_id,
+                            "run_attempt": raw_run.get("run_attempt"),
+                            "workflow_name": raw_run.get("name"),
+                            "head_branch": raw_run.get("head_branch"),
+                            "head_sha": raw_run.get("head_sha"),
+                            "status": raw_run.get("status"),
+                            "conclusion": raw_run.get("conclusion"),
+                            "run_url": raw_run.get("html_url"),
+                            "remote_fingerprint": remote_fingerprint,
+                            "remote_metadata_fingerprint": remote_fingerprint,
+                            "remote_artifacts": remote_artifacts,
+                            "artifacts": [item.model_dump() for item in artifacts],
+                            "synced_at": _utc_now_iso(),
+                        },
                     )
-                _write_artifact_manifest(
-                    manifest_path,
-                    {
-                        "run_id": request.run_id,
-                        "run_attempt": raw_run.get("run_attempt"),
-                        "workflow_name": raw_run.get("name"),
-                        "head_branch": raw_run.get("head_branch"),
-                        "head_sha": raw_run.get("head_sha"),
-                        "status": raw_run.get("status"),
-                        "conclusion": raw_run.get("conclusion"),
-                        "run_url": raw_run.get("html_url"),
-                        "remote_fingerprint": remote_fingerprint,
-                        "remote_metadata_fingerprint": remote_fingerprint,
-                        "remote_artifacts": remote_artifacts,
-                        "artifacts": [item.model_dump() for item in artifacts],
-                        "synced_at": _utc_now_iso(),
-                    },
-                )
         response = SyncRunArtifactsToWorkspaceResponse(
             workspace_id=workspace_id,
             run_id=request.run_id,

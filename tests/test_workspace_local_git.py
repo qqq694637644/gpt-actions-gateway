@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,7 @@ class LocalGitea:
         self.artifact_size_in_bytes: int | None = None
         self.artifact_updated_at = "2026-05-30T00:01:00Z"
         self.downloaded_artifacts: list[int] = []
+        self.download_artifact_hook: Callable[[int], None] | None = None
 
     def git_remote_url(self, owner: str, repo: str) -> str:
         return str(self.remote)
@@ -86,6 +88,8 @@ class LocalGitea:
 
     async def download_artifact(self, owner: str, repo: str, artifact_id: int) -> bytes:
         self.downloaded_artifacts.append(artifact_id)
+        if self.download_artifact_hook is not None:
+            self.download_artifact_hook(artifact_id)
         return self.artifact_zip
 
 
@@ -269,6 +273,33 @@ def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_p
     assert second.downloaded is False
     assert second.skipped is True
     assert forge.downloaded_artifacts == [55]
+
+
+def test_sync_run_artifacts_to_workspace_downloads_outside_workspace_lock(tmp_path: Path):
+    remote, _ = make_local_repo(tmp_path)
+    service, manager = make_service(tmp_path, remote)
+    prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_lock")))
+    forge = service.forge  # type: ignore[attr-defined]
+    lock_path = manager.workspace_dir(prepared.workspace_id) / "lock"
+    lock_seen_during_download: list[bool] = []
+
+    def record_lock_state(artifact_id: int) -> None:
+        assert artifact_id == 55
+        lock_seen_during_download.append(lock_path.exists())
+
+    forge.download_artifact_hook = record_lock_state
+
+    response = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
+        )
+    )
+
+    assert response.downloaded is True
+    assert lock_seen_during_download == [False]
 
 
 def test_sync_run_artifacts_to_workspace_replaces_target_when_digest_changes(tmp_path: Path):
