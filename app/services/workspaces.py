@@ -13,7 +13,7 @@ from typing import Any
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.ci import SyncedRunArtifact, SyncRunArtifactsToWorkspaceRequest, SyncRunArtifactsToWorkspaceResponse
 from app.models.workspaces import (
     PrepareWorkspaceRequest,
@@ -57,8 +57,8 @@ _SAFE_ARTIFACT_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class WorkspaceService:
-    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings, manager: WorkspaceManager, audit: AuditStore) -> None:
-        self.github = github
+    def __init__(self, forge: GiteaClient, policy: Policy, settings: Settings, manager: WorkspaceManager, audit: AuditStore) -> None:
+        self.forge = forge
         self.policy = policy
         self.settings = settings
         self.manager = manager
@@ -362,7 +362,7 @@ class WorkspaceService:
                         dry_run=True,
                     )
                 else:
-                    auth_config = await self.github.git_auth_config()
+                    auth_config = await self.forge.git_auth_config()
                     push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
                     if push.exit_code != 0:
                         raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
@@ -374,7 +374,7 @@ class WorkspaceService:
                         previous_head_sha=str(remote_head),
                         new_head_sha=current_head,
                         commit_sha=current_head,
-                        commit_url=f"https://github.com/{owner}/{repo}/commit/{current_head}",
+                        commit_url=self._commit_url(owner, repo, current_head),
                         changed_files=committed,
                         diff_stat=diff_stat,
                         pushed=True,
@@ -420,7 +420,7 @@ class WorkspaceService:
                     await self.manager.git.run(["git", "config", "user.email", self.settings.workspace_git_user_email], cwd=repo_dir)
                     await self.manager.git.run(["git", "commit", "-m", request.commit_message], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds)
                     new_head = await self.manager.head_sha(repo_dir)
-                    auth_config = await self.github.git_auth_config()
+                    auth_config = await self.forge.git_auth_config()
                     push = await self.manager.git.run(["git", *auth_config, "push", "origin", f"HEAD:{request.branch}"], cwd=repo_dir, timeout=self.settings.workspace_max_timeout_seconds, check=False, allowed_exit_codes=(0,), max_output_bytes=self.settings.workspace_max_output_bytes)
                     if push.exit_code != 0:
                         raise ApiError(ErrorCode.WORKSPACE_PUSH_FAILED, "Git push failed; local commit was not force-pushed.", status_code=502, details={"stdout": push.stdout, "stderr": push.stderr})
@@ -432,7 +432,7 @@ class WorkspaceService:
                         previous_head_sha=previous_head,
                         new_head_sha=new_head,
                         commit_sha=new_head,
-                        commit_url=f"https://github.com/{owner}/{repo}/commit/{new_head}",
+                        commit_url=self._commit_url(owner, repo, new_head),
                         changed_files=staged,
                         diff_stat=diff_stat,
                         pushed=True,
@@ -478,7 +478,7 @@ class WorkspaceService:
         request: SyncRunArtifactsToWorkspaceRequest,
     ) -> SyncRunArtifactsToWorkspaceResponse:
         meta = self._assert_workspace(owner, repo, workspace_id)
-        raw_run = await self.github.get_workflow_run(owner, repo, request.run_id)
+        raw_run = await self.forge.get_workflow_run(owner, repo, request.run_id)
         if raw_run.get("status") != "completed":
             raise ApiError(
                 ErrorCode.CI_LOG_NOT_READY,
@@ -501,7 +501,7 @@ class WorkspaceService:
         with self.manager.lock(workspace_id):
             gitignore_updated = _ensure_gpt_artifacts_local_exclude(repo_dir)
             existing_manifest = _read_artifact_manifest(manifest_path)
-            skipped = _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
+            skipped = _can_skip_artifact_sync(remote_artifacts) and _manifest_is_current(repo_dir, existing_manifest, remote_fingerprint)
             if skipped:
                 artifacts = [SyncedRunArtifact(**item) for item in existing_manifest.get("artifacts", [])]
             else:
@@ -512,14 +512,17 @@ class WorkspaceService:
                     artifact_id = int(item["artifact_id"])
                     name = str(item["name"])
                     destination = target_dir / f"{artifact_id}-{_safe_artifact_name(name)}"
-                    archive_data = await self.github.download_artifact(owner, repo, artifact_id)
-                    _verify_artifact_digest(archive_data, str(item["digest"]))
+                    archive_data = await self.forge.download_artifact(owner, repo, artifact_id)
+                    remote_digest = item.get("remote_digest")
+                    computed_archive_sha256 = _verified_or_computed_artifact_digest(archive_data, remote_digest)
                     file_count, bytes_written = _extract_artifact_archive(archive_data, destination)
                     artifacts.append(
                         SyncedRunArtifact(
                             artifact_id=artifact_id,
                             name=name,
-                            digest=str(item["digest"]),
+                            digest=computed_archive_sha256,
+                            remote_digest=remote_digest,
+                            computed_archive_sha256=computed_archive_sha256,
                             destination_dir=_relative_repo_path(repo_dir, destination),
                             file_count=file_count,
                             bytes_written=bytes_written,
@@ -537,6 +540,7 @@ class WorkspaceService:
                         "conclusion": raw_run.get("conclusion"),
                         "run_url": raw_run.get("html_url"),
                         "remote_fingerprint": remote_fingerprint,
+                        "remote_metadata_fingerprint": remote_fingerprint,
                         "remote_artifacts": remote_artifacts,
                         "artifacts": [item.model_dump() for item in artifacts],
                         "synced_at": _utc_now_iso(),
@@ -578,7 +582,7 @@ class WorkspaceService:
         total_count = 0
         page = 1
         while True:
-            payload = await self.github.list_artifacts_for_run(owner, repo, run_id, per_page=_ARTIFACT_PAGE_SIZE, page=page)
+            payload = await self.forge.list_artifacts_for_run(owner, repo, run_id, per_page=_ARTIFACT_PAGE_SIZE, page=page)
             if page == 1:
                 total_count = int(payload.get("total_count") or 0)
             page_items = payload.get("artifacts", [])
@@ -638,49 +642,62 @@ class WorkspaceService:
             "total_duration_ms": result.total_duration_ms,
         }
 
+    def _commit_url(self, owner: str, repo: str, sha: str) -> str:
+        commit_url = getattr(self.forge, "commit_url", None)
+        if callable(commit_url):
+            return str(commit_url(owner, repo, sha))
+        remote = self.forge.git_remote_url(owner, repo)
+        return f"{remote.removesuffix('.git').rstrip('/')}/commit/{sha}"
+
 
 def _artifact_manifest_records(raw_artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
-    missing_digest: list[dict[str, Any]] = []
     for raw in raw_artifacts:
         artifact_id = raw.get("id")
         digest = raw.get("digest")
         name = str(raw.get("name") or "")
         if artifact_id is None:
-            raise ApiError(ErrorCode.GITHUB_ERROR, "GitHub artifact payload is missing id.", status_code=502, details={"artifact": raw})
-        if not isinstance(digest, str) or not digest.strip():
-            missing_digest.append({"artifact_id": artifact_id, "name": name})
-            continue
+            raise ApiError(ErrorCode.GITEA_ERROR, "Gitea artifact payload is missing id.", status_code=502, details={"artifact": raw})
         artifacts.append(
             {
                 "artifact_id": int(artifact_id),
                 "name": name,
-                "digest": digest.strip(),
+                "digest": digest.strip() if isinstance(digest, str) and digest.strip() else None,
+                "remote_digest": digest.strip() if isinstance(digest, str) and digest.strip() else None,
                 "size_in_bytes": raw.get("size_in_bytes"),
                 "created_at": raw.get("created_at"),
                 "expires_at": raw.get("expires_at"),
                 "updated_at": raw.get("updated_at"),
             }
         )
-    if missing_digest:
-        raise ApiError(
-            ErrorCode.GITHUB_ERROR,
-            "GitHub artifact metadata did not include digest, so the gateway refused to sync it safely. Use getRunLog/job logs instead, or enable an explicit unsafe artifact sync mode after review.",
-            status_code=502,
-            details={"missing_artifacts": missing_digest},
-        )
     return sorted(artifacts, key=lambda item: item["artifact_id"])
 
 
 def _artifact_fingerprint_inputs(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
+    inputs: list[dict[str, Any]] = []
+    for item in artifacts:
+        entry = {
             "artifact_id": item["artifact_id"],
             "name": item["name"],
-            "digest": item["digest"],
         }
-        for item in artifacts
-    ]
+        if item.get("digest"):
+            entry["digest"] = item["digest"]
+        else:
+            entry.update(
+                {
+                    "digest": None,
+                    "size_in_bytes": item.get("size_in_bytes"),
+                    "created_at": item.get("created_at"),
+                    "expires_at": item.get("expires_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+            )
+        inputs.append(entry)
+    return inputs
+
+
+def _can_skip_artifact_sync(artifacts: list[dict[str, Any]]) -> bool:
+    return all(bool(item.get("remote_digest")) for item in artifacts)
 
 
 def _ensure_gpt_artifacts_local_exclude(repo_dir: Path) -> bool:
@@ -780,23 +797,28 @@ def _extract_artifact_archive(data: bytes, destination: Path) -> tuple[int, int]
     return file_count, bytes_written
 
 
-def _verify_artifact_digest(data: bytes, digest: str) -> None:
+def _verified_or_computed_artifact_digest(data: bytes, digest: Any) -> str:
+    actual = f"sha256:{hashlib.sha256(data).hexdigest()}"
+    if digest is None:
+        return actual
+    if not isinstance(digest, str) or not digest.strip():
+        return actual
     algorithm, separator, expected = digest.strip().partition(":")
     if separator != ":" or algorithm.lower() != "sha256" or not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
         raise ApiError(
-            ErrorCode.GITHUB_ERROR,
+            ErrorCode.GITEA_ERROR,
             "Unsupported artifact digest format; expected sha256:<64 hex>.",
             status_code=502,
             details={"digest": digest},
         )
-    actual = hashlib.sha256(data).hexdigest()
-    if actual.lower() != expected.lower():
+    if actual.removeprefix("sha256:").lower() != expected.lower():
         raise ApiError(
-            ErrorCode.GITHUB_ERROR,
-            "Downloaded artifact digest does not match GitHub digest.",
+            ErrorCode.GITEA_ERROR,
+            "Downloaded artifact digest does not match Gitea artifact metadata.",
             status_code=502,
-            details={"expected_digest": digest, "actual_digest": f"sha256:{actual}"},
+            details={"expected_digest": digest, "actual_digest": actual},
         )
+    return actual
 
 
 def _safe_zip_member_path(filename: str) -> PurePosixPath:
@@ -827,3 +849,4 @@ def _safe_artifact_name(name: str) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+

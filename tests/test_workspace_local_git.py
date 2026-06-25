@@ -32,7 +32,7 @@ from app.workspace.manager import WorkspaceManager, split_command
 from app.workspace.models import CommandResult
 
 
-class LocalGitHub:
+class LocalGitea:
     def __init__(self, remote: Path) -> None:
         self.remote = remote
         self.artifact_zip = make_zip_bytes({"junit.xml": "<testsuite tests='1'/>\n", "nested/log.txt": "ok\n"})
@@ -61,7 +61,7 @@ class LocalGitHub:
             "head_sha": "1111111111111111111111111111111111111111",
             "status": "completed",
             "conclusion": "failure",
-            "html_url": "https://github.test/run/77",
+            "html_url": "https://gitea.test/run/77",
             "created_at": "2026-05-30T00:00:00Z",
             "updated_at": "2026-05-30T00:01:00Z",
         }
@@ -74,7 +74,7 @@ class LocalGitHub:
                     "id": 55,
                     "name": "reports",
                     "size_in_bytes": self.artifact_size_in_bytes if self.artifact_size_in_bytes is not None else len(self.artifact_zip),
-                    "archive_download_url": "https://github.test/artifacts/55/zip",
+                    "archive_download_url": "https://gitea.test/artifacts/55/zip",
                     "digest": self.artifact_digest,
                     "expired": False,
                     "created_at": "2026-05-30T00:00:00Z",
@@ -147,11 +147,11 @@ def make_service(
         workspace_python_venv_enabled=workspace_python_venv_enabled,
         workspace_python_venv_python=workspace_python_venv_python or sys.executable,
     )
-    github = LocalGitHub(remote)
+    forge = LocalGitea(remote)
     policy = Policy(settings)
     audit = AuditStore(settings.audit_db_url)
-    manager = WorkspaceManager(settings, github, policy)  # type: ignore[arg-type]
-    service = WorkspaceService(github, policy, settings, manager, audit)  # type: ignore[arg-type]
+    manager = WorkspaceManager(settings, forge, policy)  # type: ignore[arg-type]
+    service = WorkspaceService(forge, policy, settings, manager, audit)  # type: ignore[arg-type]
     return service, manager
 
 
@@ -220,7 +220,7 @@ def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_p
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts")))
-    github = service.github  # type: ignore[attr-defined]
+    forge = service.forge  # type: ignore[attr-defined]
 
     first = run(
         service.sync_run_artifacts_to_workspace(
@@ -239,17 +239,23 @@ def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_p
     assert first.gitignore_path == ".git/info/exclude"
     assert first.gitignore_updated is True
     assert first.artifacts[0].destination_dir == ".gpt-artifacts/runs/77/55-reports"
+    assert first.artifacts[0].digest == artifact_digest(forge.artifact_zip)
+    assert first.artifacts[0].remote_digest == artifact_digest(forge.artifact_zip)
+    assert first.artifacts[0].computed_archive_sha256 == artifact_digest(forge.artifact_zip)
     assert (repo_dir / first.artifacts[0].destination_dir / "junit.xml").read_text(encoding="utf-8").startswith("<testsuite")
-    assert json.loads((repo_dir / first.manifest_path).read_text(encoding="utf-8"))["remote_fingerprint"] == first.remote_fingerprint
+    manifest = json.loads((repo_dir / first.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["remote_fingerprint"] == first.remote_fingerprint
+    assert manifest["artifacts"][0]["remote_digest"] == artifact_digest(forge.artifact_zip)
+    assert manifest["artifacts"][0]["computed_archive_sha256"] == artifact_digest(forge.artifact_zip)
     assert ".gpt-artifacts/" in (repo_dir / ".git" / "info" / "exclude").read_text(encoding="utf-8")
     assert ".gpt-artifacts" not in git("status", "--porcelain=v1", "--untracked-files=all", cwd=repo_dir)
     status = run(service.status("acme", "demo", prepared.workspace_id, WorkspaceStatusRequest()))
     assert status.dirty is False
     assert status.changed_files == []
-    assert github.downloaded_artifacts == [55]
+    assert forge.downloaded_artifacts == [55]
 
-    github.artifact_size_in_bytes = len(github.artifact_zip) + 123
-    github.artifact_updated_at = "2026-05-30T00:02:00Z"
+    forge.artifact_size_in_bytes = len(forge.artifact_zip) + 123
+    forge.artifact_updated_at = "2026-05-30T00:02:00Z"
 
     second = run(
         service.sync_run_artifacts_to_workspace(
@@ -262,14 +268,14 @@ def test_sync_run_artifacts_to_workspace_downloads_and_skips_unchanged_run(tmp_p
 
     assert second.downloaded is False
     assert second.skipped is True
-    assert github.downloaded_artifacts == [55]
+    assert forge.downloaded_artifacts == [55]
 
 
 def test_sync_run_artifacts_to_workspace_replaces_target_when_digest_changes(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, manager = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_replace")))
-    github = service.github  # type: ignore[attr-defined]
+    forge = service.forge  # type: ignore[attr-defined]
 
     first = run(
         service.sync_run_artifacts_to_workspace(
@@ -282,8 +288,8 @@ def test_sync_run_artifacts_to_workspace_replaces_target_when_digest_changes(tmp
     repo_dir = manager.repo_dir(prepared.workspace_id)
     assert (repo_dir / first.artifacts[0].destination_dir / "junit.xml").exists()
 
-    github.artifact_zip = make_zip_bytes({"new-report.txt": "new\n"})
-    github.artifact_digest = artifact_digest(github.artifact_zip)
+    forge.artifact_zip = make_zip_bytes({"new-report.txt": "new\n"})
+    forge.artifact_digest = artifact_digest(forge.artifact_zip)
     second = run(
         service.sync_run_artifacts_to_workspace(
             "acme",
@@ -295,40 +301,50 @@ def test_sync_run_artifacts_to_workspace_replaces_target_when_digest_changes(tmp
 
     assert second.downloaded is True
     assert second.skipped is False
-    assert github.downloaded_artifacts == [55, 55]
+    assert forge.downloaded_artifacts == [55, 55]
     assert not (repo_dir / first.artifacts[0].destination_dir / "junit.xml").exists()
     assert (repo_dir / second.artifacts[0].destination_dir / "new-report.txt").read_text(encoding="utf-8") == "new\n"
 
 
-def test_sync_run_artifacts_to_workspace_requires_artifact_digest(tmp_path: Path):
+def test_sync_run_artifacts_to_workspace_computes_digest_when_gitea_metadata_omits_it(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_no_digest")))
-    service.github.artifact_digest = None  # type: ignore[attr-defined]
+    forge = service.forge  # type: ignore[attr-defined]
+    forge.artifact_digest = None
 
-    with pytest.raises(ApiError) as exc:
-        run(
-            service.sync_run_artifacts_to_workspace(
-                "acme",
-                "demo",
-                prepared.workspace_id,
-                SyncRunArtifactsToWorkspaceRequest(run_id=77),
-            )
+    response = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
         )
-
-    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
-    assert exc.value.message == (
-        "GitHub artifact metadata did not include digest, so the gateway refused to sync it safely. "
-        "Use getRunLog/job logs instead, or enable an explicit unsafe artifact sync mode after review."
     )
-    assert exc.value.details == {"missing_artifacts": [{"artifact_id": 55, "name": "reports"}]}
+
+    assert response.artifacts[0].digest == artifact_digest(forge.artifact_zip)
+    assert response.artifacts[0].remote_digest is None
+    assert response.artifacts[0].computed_archive_sha256 == artifact_digest(forge.artifact_zip)
+
+    second = run(
+        service.sync_run_artifacts_to_workspace(
+            "acme",
+            "demo",
+            prepared.workspace_id,
+            SyncRunArtifactsToWorkspaceRequest(run_id=77),
+        )
+    )
+
+    assert second.downloaded is True
+    assert second.skipped is False
+    assert forge.downloaded_artifacts == [55, 55]
 
 
 def test_sync_run_artifacts_to_workspace_rejects_unsupported_digest_format(tmp_path: Path):
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_bad_digest")))
-    service.github.artifact_digest = "sha256:not-hex"  # type: ignore[attr-defined]
+    service.forge.artifact_digest = "sha256:not-hex"  # type: ignore[attr-defined]
 
     with pytest.raises(ApiError) as exc:
         run(
@@ -340,7 +356,7 @@ def test_sync_run_artifacts_to_workspace_rejects_unsupported_digest_format(tmp_p
             )
         )
 
-    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
+    assert exc.value.error_code == ErrorCode.GITEA_ERROR
     assert "Unsupported artifact digest format" in exc.value.message
 
 
@@ -348,7 +364,7 @@ def test_sync_run_artifacts_to_workspace_rejects_digest_mismatch(tmp_path: Path)
     remote, _ = make_local_repo(tmp_path)
     service, _ = make_service(tmp_path, remote)
     prepared = run(service.prepare("acme", "demo", PrepareWorkspaceRequest(branch="gpt/task", workspace_id="ws_artifacts_digest_mismatch")))
-    service.github.artifact_digest = artifact_digest(b"different archive bytes")  # type: ignore[attr-defined]
+    service.forge.artifact_digest = artifact_digest(b"different archive bytes")  # type: ignore[attr-defined]
 
     with pytest.raises(ApiError) as exc:
         run(
@@ -360,8 +376,8 @@ def test_sync_run_artifacts_to_workspace_rejects_digest_mismatch(tmp_path: Path)
             )
         )
 
-    assert exc.value.error_code == ErrorCode.GITHUB_ERROR
-    assert "does not match GitHub digest" in exc.value.message
+    assert exc.value.error_code == ErrorCode.GITEA_ERROR
+    assert "does not match Gitea artifact metadata" in exc.value.message
 
 
 def test_workspace_commit_and_push_updates_local_remote(tmp_path: Path):

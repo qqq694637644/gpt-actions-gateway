@@ -23,8 +23,8 @@ def settings(tmp_path):
         "gh auth login",
         "gh secret set TOKEN",
         "Get-ChildItem Env:",
-        "Get-Content $env:GITHUB_TOKEN",
-        "ssh git@github.com",
+        "Get-Content $env:GITEA_TOKEN",
+        "ssh git@gitea.example.com",
         "scp a b",
     ],
 )
@@ -50,7 +50,7 @@ def test_server_must_allow_requested_network(settings):
 def test_sanitized_environment_removes_sensitive_values():
     env = {
         "PATH": "/usr/bin",
-        "GITHUB_TOKEN": "secret",
+        "GITEA_TOKEN": "secret",
         "GH_TOKEN": "secret",
         "GPT_ACTION_SECRET": "secret",
         "CUSTOM_PASSWORD": "secret",
@@ -59,7 +59,7 @@ def test_sanitized_environment_removes_sensitive_values():
     clean = sanitized_environment(env)
     assert clean["PATH"] == "/usr/bin"
     assert clean["HOME"] == "/tmp/home"
-    assert clean["GITHUB_TOKEN"] == ""
-    assert clean["GH_TOKEN"] == ""
+    assert clean["GITEA_TOKEN"] == ""
+    assert "GH_TOKEN" not in clean
     assert clean["GPT_ACTION_SECRET"] == ""
     assert "CUSTOM_PASSWORD" not in clean

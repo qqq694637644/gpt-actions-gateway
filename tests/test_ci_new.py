@@ -8,6 +8,7 @@ import pytest
 
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
+from app.gitea.capabilities import GiteaCapabilities
 from app.models.ci import (
     CIStatusQueryRequest,
     DeleteCacheRequest,
@@ -33,7 +34,7 @@ def make_zip(files: dict[str, str]) -> bytes:
     return buffer.getvalue()
 
 
-class CIGitHubStub:
+class CIGiteaStub:
     def __init__(self) -> None:
         self.dispatched: tuple[str, str, dict] | None = None
         self.rerun_runs: list[tuple[int, bool]] = []
@@ -46,7 +47,7 @@ class CIGitHubStub:
         self.extra_caches: list[dict] = []
 
     async def get_workflow(self, owner: str, repo: str, workflow_id: str) -> dict:
-        return {"id": workflow_id, "path": f".github/workflows/{workflow_id}", "state": "active"}
+        return {"id": workflow_id, "path": f".gitea/workflows/{workflow_id}", "state": "active"}
 
     async def get_workflow_run(self, owner: str, repo: str, run_id: int) -> dict:
         return {
@@ -59,7 +60,7 @@ class CIGitHubStub:
             "head_sha": "2222222222222222222222222222222222222222",
             "status": "completed",
             "conclusion": "success",
-            "html_url": "https://github.test/run",
+            "html_url": "https://gitea.test/run",
             "created_at": "2026-05-30T00:00:00Z",
             "updated_at": "2026-05-30T00:01:00Z",
         }
@@ -75,7 +76,7 @@ class CIGitHubStub:
                     "name": "build",
                     "status": "completed",
                     "conclusion": "success",
-                    "html_url": "https://github.test/job/10",
+                    "html_url": "https://gitea.test/job/10",
                     "steps": [{"name": "compile", "number": 1, "status": "completed", "conclusion": "success"}],
                 }
             ]
@@ -100,7 +101,7 @@ class CIGitHubStub:
                     "head_sha": "3333333333333333333333333333333333333333",
                     "status": "completed",
                     "conclusion": "success",
-                    "html_url": "https://github.test/run/88",
+                    "html_url": "https://gitea.test/run/88",
                     "created_at": "2026-05-30T00:00:00Z",
                     "updated_at": "2026-05-30T00:01:00Z",
                 }
@@ -140,7 +141,7 @@ class CIGitHubStub:
                     "id": 55,
                     "name": "reports",
                     "size_in_bytes": 123,
-                    "archive_download_url": "https://github.test/artifacts/55/zip",
+                    "archive_download_url": "https://gitea.test/artifacts/55/zip",
                     "digest": "sha256:reports",
                     "expired": False,
                     "created_at": "2026-05-30T00:00:00Z",
@@ -172,18 +173,18 @@ class CIGitHubStub:
 
     async def delete_actions_cache(self, owner: str, repo: str, cache_id: int) -> None:
         if cache_id == 999:
-            raise ApiError(ErrorCode.GITHUB_NOT_FOUND, "not found", status_code=404)
+            raise ApiError(ErrorCode.GITEA_NOT_FOUND, "not found", status_code=404)
         self.deleted_caches.append(cache_id)
 
 
-def make_service(github: CIGitHubStub) -> CIService:
+def make_service(forge: CIGiteaStub) -> CIService:
     settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo", max_log_lines=10)
-    return CIService(github, Policy(settings), settings)
+    return CIService(forge, Policy(settings), settings)
 
 
 def test_ci_run_jobs_job_and_logs() -> None:
-    github = CIGitHubStub()
-    service = make_service(github)
+    forge = CIGiteaStub()
+    service = make_service(forge)
 
     run = asyncio.run(service.get_ci_run("acme", "demo", GetCiRunRequest(run_id=77)))
     run_with_jobs = asyncio.run(service.get_ci_run("acme", "demo", GetCiRunRequest(run_id=77, include_jobs=True)))
@@ -201,8 +202,8 @@ def test_ci_run_jobs_job_and_logs() -> None:
 
 
 def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
-    github = CIGitHubStub()
-    service = make_service(github)
+    forge = CIGiteaStub()
+    service = make_service(forge)
 
     dispatch = asyncio.run(
         service.dispatch_workflow("acme", "demo", DispatchWorkflowRequest(workflow_id="ci.yml", ref="gpt/fix", inputs={"suite": "unit"}))
@@ -217,9 +218,9 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     assert dispatch.accepted is True
     assert dispatch.event == "workflow_dispatch"
     assert dispatch.query_hint["event"] == "workflow_dispatch"
-    assert github.dispatched == ("ci.yml", "gpt/fix", {"suite": "unit"})
-    assert rerun.accepted is True and github.rerun_runs == [(77, True)]
-    assert job.accepted is True and github.rerun_jobs == [(10, False)]
+    assert forge.dispatched == ("ci.yml", "gpt/fix", {"suite": "unit"})
+    assert rerun.accepted is True and forge.rerun_runs == [(77, True)]
+    assert job.accepted is True and forge.rerun_jobs == [(10, False)]
     assert artifacts.artifacts[0].name == "reports"
     assert artifacts.artifacts[0].digest == "sha256:reports"
     assert caches.caches[0].key == "ce-lib-windows-x64"
@@ -227,14 +228,30 @@ def test_ci_dispatch_rerun_artifacts_and_caches() -> None:
     assert dry_run.selected_count == 0
     assert dry_run.requested_caches[0].cache_id == 101
     assert dry_run.selected_caches == []
-    assert delete.deleted is True and github.deleted_caches == [101]
+    assert delete.deleted is True and forge.deleted_caches == [101]
     assert delete.selected_count == 1
     assert delete.selected_caches[0].cache_id == 101
 
 
+def test_actions_cache_capability_is_rejected_at_service_boundary() -> None:
+    forge = CIGiteaStub()
+    forge.capabilities = GiteaCapabilities()  # type: ignore[attr-defined]
+    service = make_service(forge)
+
+    with pytest.raises(ApiError) as listed:
+        asyncio.run(service.list_caches("acme", "demo", ListCachesRequest(key="ce-lib-")))
+    with pytest.raises(ApiError) as deleted:
+        asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101, dry_run=True)))
+
+    assert listed.value.error_code == ErrorCode.GITEA_UNSUPPORTED
+    assert deleted.value.error_code == ErrorCode.GITEA_UNSUPPORTED
+    assert forge.cache_list_calls == []
+    assert forge.deleted_caches == []
+
+
 def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
-    github = CIGitHubStub()
-    service = make_service(github)
+    forge = CIGiteaStub()
+    service = make_service(forge)
 
     dispatch = asyncio.run(service.dispatch_workflow("acme", "demo", DispatchWorkflowRequest(workflow_id="ci.yml", ref="refs/tags/v1.0.0")))
     status = asyncio.run(service.get_ci_status("acme", "demo", CIStatusQueryRequest(**dispatch.query_hint)))
@@ -245,12 +262,12 @@ def test_dispatch_workflow_tag_query_hint_can_query_ci_status() -> None:
     assert status.matched_by == "workflow_id"
     assert status.conclusion == "success"
     assert "jobs" not in status.workflow_runs[0].model_dump()
-    assert github.job_list_calls == []
+    assert forge.job_list_calls == []
 
 
 def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -> None:
-    github = CIGitHubStub()
-    service = make_service(github)
+    forge = CIGiteaStub()
+    service = make_service(forge)
 
     default_dry_run = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=101)))
     missing = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=999, dry_run=False, confirm=True)))
@@ -261,21 +278,21 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
     assert default_dry_run.selected_count == 0
     assert default_dry_run.requested_caches[0].cache_id == 101
     assert default_dry_run.selected_caches == []
-    assert default_dry_run.warning == "Dry run only; requested cache_id was not verified against GitHub. Use listCaches to inspect metadata before deleting."
-    assert github.cache_list_calls == []
-    assert github.deleted_caches == []
+    assert default_dry_run.warning == "Dry run only; requested cache_id was not verified against Gitea. Use listCaches to inspect metadata before deleting when the Gitea API supports caches."
+    assert forge.cache_list_calls == []
+    assert forge.deleted_caches == []
     assert missing.requested_count == 1
     assert missing.selected_count == 0
     assert missing.requested_caches[0].cache_id == 999
     assert missing.selected_caches == []
-    assert github.deleted_caches == []
+    assert forge.deleted_caches == []
 
     with pytest.raises(ApiError) as no_confirm:
         asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=202, dry_run=False)))
 
     assert no_confirm.value.error_code == ErrorCode.VALIDATION_ERROR
     assert "confirm=true" in no_confirm.value.message
-    assert github.deleted_caches == []
+    assert forge.deleted_caches == []
 
     direct_delete = asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(cache_id=202, dry_run=False, confirm=True)))
 
@@ -284,12 +301,12 @@ def test_delete_cache_defaults_to_dry_run_and_does_not_fake_missing_cache_id() -
     assert direct_delete.selected_count == 1
     assert direct_delete.requested_caches[0].cache_id == 202
     assert direct_delete.selected_caches[0].cache_id == 202
-    assert github.cache_list_calls == []
-    assert github.deleted_caches == [202]
+    assert forge.cache_list_calls == []
+    assert forge.deleted_caches == [202]
 
 
 def test_delete_cache_rejects_short_or_broad_keys() -> None:
-    service = make_service(CIGitHubStub())
+    service = make_service(CIGiteaStub())
 
     with pytest.raises(ApiError) as exc:
         asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="c")))
@@ -298,15 +315,15 @@ def test_delete_cache_rejects_short_or_broad_keys() -> None:
 
 
 def test_delete_cache_actual_selector_requires_confirm_or_expected_metadata() -> None:
-    github = CIGitHubStub()
-    service = make_service(github)
+    forge = CIGiteaStub()
+    service = make_service(forge)
 
     with pytest.raises(ApiError) as no_confirm:
         asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False)))
 
     assert no_confirm.value.error_code == ErrorCode.VALIDATION_ERROR
     assert "confirm=true" in no_confirm.value.message
-    assert github.deleted_caches == []
+    assert forge.deleted_caches == []
 
     delete = asyncio.run(
         service.delete_cache(
@@ -324,12 +341,12 @@ def test_delete_cache_actual_selector_requires_confirm_or_expected_metadata() ->
     )
 
     assert delete.deleted is True
-    assert github.deleted_caches == [101]
+    assert forge.deleted_caches == [101]
 
 
 def test_delete_cache_rejects_selector_matching_more_than_max_delete() -> None:
-    github = CIGitHubStub()
-    github.extra_caches = [
+    forge = CIGiteaStub()
+    forge.extra_caches = [
         {
             "id": 102,
             "key": "ce-lib-linux-x64",
@@ -340,11 +357,11 @@ def test_delete_cache_rejects_selector_matching_more_than_max_delete() -> None:
             "last_accessed_at": "2026-05-30T00:00:00Z",
         }
     ]
-    service = make_service(github)
+    service = make_service(forge)
 
     with pytest.raises(ApiError) as exc:
         asyncio.run(service.delete_cache("acme", "demo", DeleteCacheRequest(key="ce-lib-", ref="refs/heads/gpt/fix", dry_run=False, confirm=True, max_delete=1)))
 
     assert exc.value.error_code == ErrorCode.VALIDATION_ERROR
     assert "max_delete" in exc.value.message
-    assert github.deleted_caches == []
+    assert forge.deleted_caches == []

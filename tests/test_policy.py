@@ -53,7 +53,7 @@ def test_write_branch_policy() -> None:
 def test_workflow_edit_blocked_by_default() -> None:
     policy = make_policy()
     with pytest.raises(ApiError) as exc:
-        policy.assert_write_path_allowed(".github/workflows/ci.yml")
+        policy.assert_write_path_allowed(".gitea/workflows/ci.yml")
     assert exc.value.error_code == ErrorCode.WORKFLOW_EDIT_NOT_ALLOWED
 
 

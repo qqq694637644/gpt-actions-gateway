@@ -8,7 +8,7 @@ from typing import Any
 from app.ci.logs import parse_failed_log
 from app.config.settings import Settings
 from app.errors import ApiError, ErrorCode
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.models.ci import (
     ActionCache,
     Annotation,
@@ -50,8 +50,8 @@ from app.storage.audit import AuditStore, canonical_hash
 
 
 class CIService:
-    def __init__(self, github: GitHubClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
-        self.github = github
+    def __init__(self, forge: GiteaClient, policy: Policy, settings: Settings, audit: AuditStore | None = None) -> None:
+        self.forge = forge
         self.policy = policy
         self.settings = settings
         self.audit = audit
@@ -63,7 +63,7 @@ class CIService:
         branch = request.branch
         warning = None
         if request.pr_number is not None:
-            pr = await self.github.get_pull_request(owner, repo, request.pr_number)
+            pr = await self.forge.get_pull_request(owner, repo, request.pr_number)
             target_sha = pr["head"]["sha"]
             branch = pr["head"]["ref"]
             matched_by = "pr_number"
@@ -71,7 +71,7 @@ class CIService:
             matched_by = "commit_sha"
         elif branch:
             self.policy.assert_read_ref_allowed(branch)
-            target_sha = await self.github.get_branch_head(owner, repo, branch)
+            target_sha = await self.forge.get_branch_head(owner, repo, branch)
             matched_by = "branch"
             warning = "Branch query was resolved to current branch head SHA."
         elif request.workflow_id and request.created_after:
@@ -90,7 +90,7 @@ class CIService:
         if request.created_after:
             params["created"] = f">={request.created_after}"
 
-        payload = await self.github.list_workflow_runs(owner, repo, workflow_id=request.workflow_id, params=params)
+        payload = await self.forge.list_workflow_runs(owner, repo, workflow_id=request.workflow_id, params=params)
         raw_runs = payload.get("workflow_runs", [])
         if target_sha:
             raw_runs = [run for run in raw_runs if run.get("head_sha") == target_sha]
@@ -103,24 +103,24 @@ class CIService:
                 details={"commit_sha": target_sha, "branch": branch, "workflow_id": request.workflow_id, "event": request.event},
             )
 
-        runs = [self._run_summary_from_github(raw_run) for raw_run in raw_runs[:20]]
+        runs = [self._run_summary_from_forge(raw_run) for raw_run in raw_runs[:20]]
         status, conclusion = self._aggregate(runs)
         return CIStatusResponse(matched_by=matched_by, status=status, conclusion=conclusion, workflow_runs=runs, warning=warning)
 
     async def get_ci_run(self, owner: str, repo: str, request: GetCiRunRequest) -> GetCiRunResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        raw_run = await self.github.get_workflow_run(owner, repo, request.run_id)
+        raw_run = await self.forge.get_workflow_run(owner, repo, request.run_id)
         jobs: list[CIJob] | None = None
         if request.include_jobs:
-            jobs_payload = await self.github.list_jobs_for_run(owner, repo, request.run_id, run_attempt=raw_run.get("run_attempt"))
-            jobs = [self._job_from_github(job) for job in jobs_payload.get("jobs", [])]
-        run = self._run_from_github(raw_run, jobs=jobs)
+            jobs_payload = await self.forge.list_jobs_for_run(owner, repo, request.run_id, run_attempt=raw_run.get("run_attempt"))
+            jobs = [self._job_from_forge(job) for job in jobs_payload.get("jobs", [])]
+        run = self._run_from_forge(raw_run, jobs=jobs)
         return GetCiRunResponse(run=run)
 
     async def get_ci_jobs(self, owner: str, repo: str, request: GetCiJobsRequest) -> GetCiJobsResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        payload = await self.github.list_jobs_for_run(owner, repo, request.run_id, run_attempt=request.run_attempt)
-        jobs = [self._job_from_github(job) for job in payload.get("jobs", [])]
+        payload = await self.forge.list_jobs_for_run(owner, repo, request.run_id, run_attempt=request.run_attempt)
+        jobs = [self._job_from_forge(job) for job in payload.get("jobs", [])]
         return GetCiJobsResponse(run_id=request.run_id, run_attempt=request.run_attempt, jobs=jobs, total_count=int(payload.get("total_count") or len(jobs)))
 
     async def dispatch_workflow(self, owner: str, repo: str, request: DispatchWorkflowRequest) -> DispatchWorkflowResponse:
@@ -133,15 +133,16 @@ class CIService:
             if cached:
                 return DispatchWorkflowResponse(**cached)
 
-        await self.github.get_workflow(owner, repo, request.workflow_id)
+        await self.forge.get_workflow(owner, repo, request.workflow_id)
         created_after = _utc_now_iso()
-        await self.github.dispatch_workflow(owner, repo, request.workflow_id, ref=ref, inputs=request.inputs or None)
+        dispatch_result = await self.forge.dispatch_workflow(owner, repo, request.workflow_id, ref=ref, inputs=request.inputs or None)
         response = DispatchWorkflowResponse(
             workflow_id=request.workflow_id,
             ref=ref,
             accepted=True,
             created_after=created_after,
             query_hint=self._dispatch_query_hint(request.workflow_id, ref, created_after),
+            warning=_dispatch_warning(dispatch_result),
         )
         if request.idempotency_key and self.audit:
             self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
@@ -156,8 +157,8 @@ class CIService:
             if cached:
                 return RerunWorkflowRunResponse(**cached)
 
-        raw_run = await self.github.get_workflow_run(owner, repo, request.run_id)
-        await self.github.rerun_workflow_run(owner, repo, request.run_id, enable_debug_logging=request.enable_debug_logging)
+        raw_run = await self.forge.get_workflow_run(owner, repo, request.run_id)
+        await self.forge.rerun_workflow_run(owner, repo, request.run_id, enable_debug_logging=request.enable_debug_logging)
         response = RerunWorkflowRunResponse(run_id=request.run_id, accepted=True, query_hint=self._run_query_hint(raw_run))
         if request.idempotency_key and self.audit:
             self.audit.save_idempotent_response(scope=scope, key=request.idempotency_key, request_payload=payload, response_payload=response.model_dump())
@@ -172,10 +173,10 @@ class CIService:
             if cached:
                 return RerunWorkflowJobResponse(**cached)
 
-        raw_job = await self.github.get_workflow_job(owner, repo, request.job_id)
+        raw_job = await self.forge.get_workflow_job(owner, repo, request.job_id)
         run_id = raw_job.get("run_id")
-        raw_run = await self.github.get_workflow_run(owner, repo, int(run_id)) if run_id else None
-        await self.github.rerun_workflow_job(owner, repo, request.job_id, enable_debug_logging=request.enable_debug_logging)
+        raw_run = await self.forge.get_workflow_run(owner, repo, int(run_id)) if run_id else None
+        await self.forge.rerun_workflow_job(owner, repo, request.job_id, enable_debug_logging=request.enable_debug_logging)
         query_hint: dict[str, Any] = {"job_id": request.job_id}
         if raw_run:
             query_hint.update(self._run_query_hint(raw_run))
@@ -188,9 +189,10 @@ class CIService:
 
     async def list_caches(self, owner: str, repo: str, request: ListCachesRequest) -> ListCachesResponse:
         self.policy.assert_repo_allowed(owner, repo)
+        self._assert_actions_cache_supported(owner, repo)
         params = self._cache_query_params(request)
-        payload = await self.github.list_actions_caches(owner, repo, params=params)
-        caches = [self._cache_from_github(item) for item in payload.get("actions_caches", [])[: request.max_results]]
+        payload = await self.forge.list_actions_caches(owner, repo, params=params)
+        caches = [self._cache_from_forge(item) for item in payload.get("actions_caches", [])[: request.max_results]]
         total_count = int(payload.get("total_count") or len(caches))
         truncated = total_count > len(caches)
         warning = "Results were truncated; use key/ref filters or increase max_results." if truncated else None
@@ -198,6 +200,7 @@ class CIService:
 
     async def delete_cache(self, owner: str, repo: str, request: DeleteCacheRequest) -> DeleteCacheResponse:
         self.policy.assert_repo_allowed(owner, repo)
+        self._assert_actions_cache_supported(owner, repo)
         scope = f"{owner}/{repo}:delete_cache"
         payload = request.model_dump()
         if request.idempotency_key and self.audit:
@@ -234,7 +237,7 @@ class CIService:
             self._assert_cache_delete_confirmed(request, by_cache_id=False)
             self._assert_selected_caches_match_expected(selected, request)
             for cache in selected:
-                await self.github.delete_actions_cache(owner, repo, cache.cache_id)
+                await self.forge.delete_actions_cache(owner, repo, cache.cache_id)
                 deleted_count += 1
         warning = "Dry run only; no cache was deleted." if request.dry_run else None
         response = DeleteCacheResponse(
@@ -253,7 +256,7 @@ class CIService:
 
     async def get_failed_ci_log(self, owner: str, repo: str, request: FailedLogQueryRequest) -> FailedCILogResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        jobs_payload = await self.github.list_jobs_for_run(owner, repo, request.run_id, run_attempt=request.run_attempt)
+        jobs_payload = await self.forge.list_jobs_for_run(owner, repo, request.run_id, run_attempt=request.run_attempt)
         jobs = jobs_payload.get("jobs", [])
         if request.job_id is not None:
             jobs = [job for job in jobs if int(job["id"]) == request.job_id]
@@ -265,7 +268,7 @@ class CIService:
         max_lines = min(request.max_lines or self.settings.max_log_lines, self.settings.max_log_lines)
         failed_jobs: list[FailedJobLog] = []
         for job in jobs[:10]:
-            raw_log = await self.github.download_job_logs(owner, repo, int(job["id"]))
+            raw_log = await self.forge.download_job_logs(owner, repo, int(job["id"]))
             parsed = parse_failed_log(raw_log, max_lines=max_lines, max_bytes=self.settings.max_log_bytes)
             failed_step = None
             for step in job.get("steps") or []:
@@ -289,7 +292,7 @@ class CIService:
 
     async def get_job_log(self, owner: str, repo: str, request: GetJobLogRequest) -> JobLogResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        raw_log = await self.github.download_job_logs(owner, repo, request.job_id)
+        raw_log = await self.forge.download_job_logs(owner, repo, request.job_id)
         if request.step_name:
             raw_log = _extract_step_log(raw_log, request.step_name)
         max_lines = min(request.max_lines or self.settings.max_log_lines, self.settings.max_log_lines)
@@ -298,7 +301,7 @@ class CIService:
 
     async def get_run_log(self, owner: str, repo: str, request: GetRunLogRequest) -> RunLogResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        data = await self.github.download_run_logs(owner, repo, request.run_id)
+        data = await self.forge.download_run_logs(owner, repo, request.run_id)
         max_lines = min(request.max_lines_per_file or self.settings.max_log_lines, self.settings.max_log_lines)
         files: list[RunLogFile] = []
         truncated = False
@@ -324,7 +327,7 @@ class CIService:
 
     async def list_artifacts(self, owner: str, repo: str, request: ListArtifactsRequest) -> ListArtifactsResponse:
         self.policy.assert_repo_allowed(owner, repo)
-        payload = await self.github.list_artifacts_for_run(owner, repo, request.run_id, per_page=request.max_results)
+        payload = await self.forge.list_artifacts_for_run(owner, repo, request.run_id, per_page=request.max_results)
         artifacts = [
             Artifact(
                 artifact_id=item["id"],
@@ -367,10 +370,10 @@ class CIService:
         if request.key:
             params["key"] = request.key.strip()
         if request.ref:
-            params["ref"] = self._cache_ref_for_github(request.ref)
+            params["ref"] = self._cache_ref_for_forge(request.ref)
         return params
 
-    def _cache_ref_for_github(self, ref: str) -> str:
+    def _cache_ref_for_forge(self, ref: str) -> str:
         normalized = ref.strip()
         if not normalized or any(ch.isspace() for ch in normalized):
             raise ApiError(ErrorCode.VALIDATION_ERROR, "ref must be non-empty and cannot contain whitespace.", status_code=422)
@@ -391,8 +394,8 @@ class CIService:
         key = self._validate_cache_delete_key(request.key or "")
         params: dict[str, Any] = {"per_page": 100, "key": key, "sort": "last_accessed_at", "direction": "desc"}
         if request.ref:
-            params["ref"] = self._cache_ref_for_github(request.ref)
-        payload = await self.github.list_actions_caches(owner, repo, params=params)
+            params["ref"] = self._cache_ref_for_forge(request.ref)
+        payload = await self.forge.list_actions_caches(owner, repo, params=params)
         raw_items = payload.get("actions_caches", [])
         total_count = int(payload.get("total_count") or len(raw_items))
         if total_count > len(raw_items):
@@ -403,7 +406,7 @@ class CIService:
                 suggestion="Use a more specific key/ref filter or delete by cache_id.",
                 details={"total_count": total_count, "enumerated_count": len(raw_items)},
             )
-        return [self._cache_from_github(item) for item in raw_items]
+        return [self._cache_from_forge(item) for item in raw_items]
 
     async def _delete_cache_by_id(self, owner: str, repo: str, request: DeleteCacheRequest) -> DeleteCacheResponse:
         cache_id = request.cache_id
@@ -419,15 +422,15 @@ class CIService:
                 selected_count=0,
                 deleted_count=0,
                 requested_caches=[cache],
-                warning="Dry run only; requested cache_id was not verified against GitHub. Use listCaches to inspect metadata before deleting.",
+                warning="Dry run only; requested cache_id was not verified against Gitea. Use listCaches to inspect metadata before deleting when the Gitea API supports caches.",
             )
 
         self._assert_cache_delete_confirmed(request, by_cache_id=True)
 
         try:
-            await self.github.delete_actions_cache(owner, repo, cache_id)
+            await self.forge.delete_actions_cache(owner, repo, cache_id)
         except ApiError as exc:
-            if exc.error_code == ErrorCode.GITHUB_NOT_FOUND:
+            if exc.error_code == str(ErrorCode.GITEA_NOT_FOUND):
                 return DeleteCacheResponse(
                     deleted=False,
                     dry_run=False,
@@ -435,7 +438,7 @@ class CIService:
                     selected_count=0,
                     deleted_count=0,
                     requested_caches=[cache],
-                    warning="GitHub reported that the cache_id was not found; no cache was deleted.",
+                    warning="Gitea reported that the cache_id was not found; no cache was deleted.",
                 )
             raise
 
@@ -482,7 +485,7 @@ class CIService:
         return request.expected_key is not None or request.expected_ref is not None or request.expected_size_in_bytes is not None
 
     def _assert_selected_caches_match_expected(self, selected: list[ActionCache], request: DeleteCacheRequest) -> None:
-        expected_ref = self._cache_ref_for_github(request.expected_ref) if request.expected_ref else None
+        expected_ref = self._cache_ref_for_forge(request.expected_ref) if request.expected_ref else None
         mismatches: list[dict[str, Any]] = []
         for cache in selected:
             mismatch: dict[str, Any] = {"cache_id": cache.cache_id}
@@ -528,8 +531,21 @@ class CIService:
             },
         )
 
+    def _assert_actions_cache_supported(self, owner: str, repo: str) -> None:
+        capabilities = getattr(self.forge, "capabilities", None)
+        supports_actions_cache = getattr(capabilities, "supports_actions_cache", True)
+        if supports_actions_cache:
+            return
+        raise ApiError(
+            ErrorCode.GITEA_UNSUPPORTED,
+            "Gitea backend does not support Actions cache list/delete through this gateway.",
+            status_code=501,
+            suggestion="Use Gitea server-side cache maintenance or runner storage cleanup instead.",
+            details={"owner": owner, "repo": repo, "capability": "actions_cache"},
+        )
+
     @staticmethod
-    def _cache_from_github(item: dict[str, Any]) -> ActionCache:
+    def _cache_from_forge(item: dict[str, Any]) -> ActionCache:
         return ActionCache(
             cache_id=int(item["id"]),
             key=item.get("key"),
@@ -570,7 +586,7 @@ class CIService:
         return clean
 
     @staticmethod
-    def _job_from_github(job: dict[str, Any]) -> CIJob:
+    def _job_from_forge(job: dict[str, Any]) -> CIJob:
         steps: list[CIStep] = []
         failed_steps: list[FailedStep] = []
         for step in job.get("steps") or []:
@@ -601,7 +617,7 @@ class CIService:
         )
 
     @staticmethod
-    def _run_summary_from_github(raw_run: dict[str, Any]) -> CIRunSummary:
+    def _run_summary_from_forge(raw_run: dict[str, Any]) -> CIRunSummary:
         return CIRunSummary(
             run_id=raw_run["id"],
             run_attempt=raw_run.get("run_attempt"),
@@ -618,8 +634,8 @@ class CIService:
         )
 
     @staticmethod
-    def _run_from_github(raw_run: dict[str, Any], *, jobs: list[CIJob] | None = None) -> CIRun:
-        return CIRun(**CIService._run_summary_from_github(raw_run).model_dump(), jobs=jobs)
+    def _run_from_forge(raw_run: dict[str, Any], *, jobs: list[CIJob] | None = None) -> CIRun:
+        return CIRun(**CIService._run_summary_from_forge(raw_run).model_dump(), jobs=jobs)
 
     @staticmethod
     def _aggregate(runs: list[CIRunSummary]) -> tuple[str, str | None]:
@@ -662,5 +678,12 @@ def _extract_step_log(raw_log: str, step_name: str) -> str:
     end = min(matches[-1] + 80, len(lines))
     return "\n".join(lines[start:end])
 
+
+def _dispatch_warning(dispatch_result: Any) -> str | None:
+    if isinstance(dispatch_result, dict) and dispatch_result.get("workflow_run_id"):
+        return None
+    return "Gitea workflow dispatch may not expose the new run immediately in list queries."
+
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+

@@ -20,6 +20,15 @@ def test_export_marks_all_public_operations_low_risk_nonconsequential():
                 assert operation["x-openai-isConsequential"] is False
 
 
+def test_public_operations_document_unsupported_error_response():
+    schema = app.openapi()
+
+    for path_item in schema["paths"].values():
+        for method, operation in path_item.items():
+            if method.lower() in {"get", "post", "put", "patch", "delete"} and "operationId" in operation:
+                assert "501" in operation["responses"]
+
+
 def test_workspace_exec_pwsh_response_excludes_workspace_change_summary():
     schema = app.openapi()
     operation = schema["paths"]["/repos/{owner}/{repo}/workspaces/{workspace_id}/exec-pwsh"]["post"]

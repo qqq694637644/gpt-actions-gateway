@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from app.github.client import GitHubClient
+from app.gitea.client import GiteaClient
 from app.policy.rules import Policy
 from app.storage.audit import AuditStore
 from app.workspace.manager import WorkspaceManager
 
 
-def github_client(request: Request) -> GitHubClient:
-    return request.app.state.github
+def forge_client(request: Request) -> GiteaClient:
+    return request.app.state.forge
+
+
+def gitea_client(request: Request) -> GiteaClient:
+    """Compatibility dependency name for the current Gitea backend."""
+
+    return forge_client(request)
 
 
 def policy(request: Request) -> Policy:
@@ -22,3 +28,4 @@ def audit_store(request: Request) -> AuditStore:
 
 def workspace_manager(request: Request) -> WorkspaceManager:
     return request.app.state.workspace_manager
+

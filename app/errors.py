@@ -24,11 +24,12 @@ class ErrorCode(StrEnum):
     PR_ALREADY_EXISTS = "PR_ALREADY_EXISTS"
     CI_RUN_NOT_FOUND = "CI_RUN_NOT_FOUND"
     CI_LOG_NOT_READY = "CI_LOG_NOT_READY"
-    GITHUB_RATE_LIMITED = "GITHUB_RATE_LIMITED"
-    GITHUB_AUTH_FAILED = "GITHUB_AUTH_FAILED"
-    GITHUB_NOT_FOUND = "GITHUB_NOT_FOUND"
-    GITHUB_CONFLICT = "GITHUB_CONFLICT"
-    GITHUB_ERROR = "GITHUB_ERROR"
+    GITEA_RATE_LIMITED = "GITEA_RATE_LIMITED"
+    GITEA_AUTH_FAILED = "GITEA_AUTH_FAILED"
+    GITEA_NOT_FOUND = "GITEA_NOT_FOUND"
+    GITEA_CONFLICT = "GITEA_CONFLICT"
+    GITEA_UNSUPPORTED = "GITEA_UNSUPPORTED"
+    GITEA_ERROR = "GITEA_ERROR"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     IDEMPOTENCY_KEY_REUSED = "IDEMPOTENCY_KEY_REUSED"
 
@@ -103,7 +104,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unexpected_error_handler(_: Request, exc: Exception) -> JSONResponse:
         response = ErrorResponse(
-            error_code=ErrorCode.GITHUB_ERROR,
+            error_code=ErrorCode.GITEA_ERROR,
             message="Unhandled server exception.",
             suggestion="Check server logs and retry the request.",
             details={"exception_type": type(exc).__name__, "error": str(exc)},

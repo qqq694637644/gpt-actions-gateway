@@ -12,26 +12,26 @@ from app.services.branches import BranchService
 from app.storage.audit import AuditStore
 
 
-class EmptyRepoGitHubStub:
+class EmptyRepoGiteaStub:
     async def get_branch_head(self, owner: str, repo: str, branch: str) -> str:
         raise ApiError(
-            ErrorCode.GITHUB_CONFLICT,
-            "GitHub reported a conflict.",
+            ErrorCode.GITEA_CONFLICT,
+            "Gitea reported a conflict.",
             status_code=409,
-            details={"github_status": 409, "body": "Git Repository is empty."},
+            details={"gitea_status": 409, "body": "Git Repository is empty."},
         )
 
     async def create_ref(self, owner: str, repo: str, branch: str, sha: str) -> dict[str, str]:
         return {"ref": f"refs/heads/{branch}", "object": {"sha": sha}}
 
 
-def make_service(tmp_path, github: EmptyRepoGitHubStub) -> BranchService:
+def make_service(tmp_path, forge: EmptyRepoGiteaStub) -> BranchService:
     settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo", audit_db_url=f"sqlite:///{tmp_path / 'audit.db'}")
-    return BranchService(github, Policy(settings), settings, AuditStore(settings.audit_db_url))
+    return BranchService(forge, Policy(settings), settings, AuditStore(settings.audit_db_url))
 
 
 def test_create_work_branch_surfaces_empty_repo_conflict(tmp_path) -> None:
-    service = make_service(tmp_path, EmptyRepoGitHubStub())
+    service = make_service(tmp_path, EmptyRepoGiteaStub())
 
     with pytest.raises(ApiError) as exc:
         asyncio.run(
@@ -42,4 +42,4 @@ def test_create_work_branch_surfaces_empty_repo_conflict(tmp_path) -> None:
             )
         )
 
-    assert exc.value.error_code == ErrorCode.GITHUB_CONFLICT
+    assert exc.value.error_code == ErrorCode.GITEA_CONFLICT

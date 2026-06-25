@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,15 +48,10 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8000"
     gpt_action_secret: str = ""
 
-    github_auth_mode: Literal["pat", "github_app"] = "pat"
-    github_api_base_url: str = "https://api.github.com"
-    github_api_version: str = "2026-03-10"
-    github_use_env_proxy: bool = False
-    github_token: str | None = None
-    github_git_username: str | None = None
-    github_app_id: str | None = None
-    github_app_private_key: str | None = None
-    github_installation_id: str | None = None
+    gitea_api_base_url: str = "http://localhost:3000/api/v1"
+    gitea_use_env_proxy: bool = False
+    gitea_token: str | None = None
+    gitea_git_username: str | None = None
 
     allowed_repos: str = ""
     allow_all_repos: bool = False
@@ -86,7 +80,7 @@ class Settings(BaseSettings):
     workspace_allow_network: bool = False
     workspace_shell: str = "pwsh"
     workspace_git_user_name: str = "gpt-actions-gateway"
-    workspace_git_user_email: str = "gpt-actions-gateway@users.noreply.github.com"
+    workspace_git_user_email: str = "gpt-actions-gateway@users.noreply.gitea.local"
     workspace_python_venv_enabled: bool = True
     workspace_python_venv_dir: str = ".venv"
     workspace_python_venv_python: str = "py -3.13"
@@ -144,6 +138,22 @@ class Settings(BaseSettings):
     @property
     def read_branch_patterns(self) -> list[str]:
         return parse_csv(self.read_branch_allowlist)
+
+    @property
+    def effective_gitea_api_base_url(self) -> str:
+        return self.gitea_api_base_url
+
+    @property
+    def effective_gitea_use_env_proxy(self) -> bool:
+        return self.gitea_use_env_proxy
+
+    @property
+    def effective_gitea_token(self) -> str | None:
+        return self.gitea_token
+
+    @property
+    def effective_gitea_git_username(self) -> str | None:
+        return self.gitea_git_username
 
 
 

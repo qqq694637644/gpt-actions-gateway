@@ -14,7 +14,7 @@ MAIN_SHA = "1111111111111111111111111111111111111111"
 GPT_SHA = "2222222222222222222222222222222222222222"
 
 
-class BranchGitHubStub:
+class BranchGiteaStub:
     def __init__(self) -> None:
         self.created_refs: list[tuple[str, str]] = []
 
@@ -26,16 +26,16 @@ class BranchGitHubStub:
     async def create_ref(self, owner: str, repo: str, branch: str, sha: str) -> dict:
         self.created_refs.append((branch, sha))
         if branch == "gpt/existing":
-            raise ApiError(ErrorCode.GITHUB_CONFLICT, "already exists", status_code=409)
+            raise ApiError(ErrorCode.GITEA_CONFLICT, "already exists", status_code=409)
         return {"ref": f"refs/heads/{branch}", "object": {"sha": sha}}
 
     async def get_branch(self, owner: str, repo: str, branch: str) -> dict:
-        return {"name": branch, "commit": {"sha": GPT_SHA, "url": "https://api.github.test/commit"}, "protected": False}
+        return {"name": branch, "commit": {"sha": GPT_SHA, "url": "https://gitea.test/api/v1/commit"}, "protected": False}
 
 
 def make_service() -> BranchService:
     settings = Settings(gpt_action_secret="secret", allowed_repos="acme/demo")
-    return BranchService(BranchGitHubStub(), Policy(settings), settings)
+    return BranchService(BranchGiteaStub(), Policy(settings), settings)
 
 
 def test_create_work_branch_can_continue_existing_named_branch() -> None:

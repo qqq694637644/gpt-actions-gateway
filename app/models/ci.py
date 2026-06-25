@@ -104,7 +104,7 @@ class DispatchWorkflowResponse(GatewayBaseModel):
     event: Literal["workflow_dispatch"] = "workflow_dispatch"
     created_after: str
     query_hint: dict[str, Any]
-    warning: str | None = "GitHub workflow dispatch accepts the request but does not return the new run_id directly."
+    warning: str | None = "Gitea workflow dispatch may not expose the new run immediately in list queries."
 
 
 class RerunWorkflowRunRequest(IdempotentRequest):
@@ -117,7 +117,7 @@ class RerunWorkflowRunResponse(GatewayBaseModel):
     accepted: bool
     status: Literal["accepted", "queued"] | str = "accepted"
     query_hint: dict[str, Any]
-    warning: str | None = "GitHub rerun APIs may not expose the new attempt immediately."
+    warning: str | None = "Gitea rerun APIs may not expose the new attempt immediately."
 
 
 class RerunWorkflowJobRequest(IdempotentRequest):
@@ -130,7 +130,7 @@ class RerunWorkflowJobResponse(GatewayBaseModel):
     accepted: bool
     status: Literal["accepted", "queued"] | str = "accepted"
     query_hint: dict[str, Any]
-    warning: str | None = "GitHub may take a few seconds to show the new job attempt."
+    warning: str | None = "Gitea may take a few seconds to show the new job attempt."
 
 
 class ActionCache(GatewayBaseModel):
@@ -284,6 +284,8 @@ class SyncedRunArtifact(GatewayBaseModel):
     artifact_id: int
     name: str
     digest: str
+    remote_digest: str | None = None
+    computed_archive_sha256: str | None = None
     destination_dir: str
     file_count: int
     bytes_written: int

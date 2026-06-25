@@ -34,8 +34,9 @@ DENY_WRITE_PATTERNS = [
     "build/**",
     "coverage/**",
     ".git/**",
+    ".github/workflows/**",
 ]
-WORKFLOW_PATTERNS = [".github/workflows/*"]
+WORKFLOW_PATTERNS = [".gitea/workflows/*"]
 LOCAL_ENV_DIRS = {".venv", "venv", "env", "myvenv", ".tox", ".nox"}
 DENY_WRITE_DIRS = {".git", "dist", "build", "node_modules", "vendor", ".next", ".turbo", "coverage", *LOCAL_ENV_DIRS}
 BINARY_DENY_EXTENSIONS = {
@@ -170,7 +171,7 @@ class Policy:
         if any(fnmatch.fnmatchcase(normalized, pattern) for pattern in WORKFLOW_PATTERNS) and not self.settings.allow_workflow_edit:
             raise ApiError(
                 ErrorCode.WORKFLOW_EDIT_NOT_ALLOWED,
-                "Editing GitHub workflow files is disabled.",
+                "Editing Gitea workflow files is disabled.",
                 status_code=403,
                 suggestion="Set ALLOW_WORKFLOW_EDIT=true only after reviewing workflow risk.",
                 details={"path": normalized},
